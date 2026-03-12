@@ -67,7 +67,7 @@ contract AnonymousVotingTest is Test {
 
     function test_CreateProposal_DurationTooShort() public {
         vm.expectRevert(AnonymousVoting.VotingDurationTooShort.selector);
-        voting.createProposal("Test", MERKLE_ROOT, TOTAL_SUPPLY, WHALE_BPS, 30 minutes);
+        voting.createProposal("Test", MERKLE_ROOT, TOTAL_SUPPLY, WHALE_BPS, 30 seconds);
     }
 
     function test_CreateProposal_InvalidTotalSupply() public {

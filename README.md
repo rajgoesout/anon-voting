@@ -375,8 +375,8 @@ Edit `frontend/src/lib/contracts.ts` and fill in the addresses from the deployme
 ```typescript
 const ADDRESSES = {
   31337: {
-    anonymousVoting: "0x9fE46736679d2D9a65F0992F2272dE9f3c7fa6e0",  // ← your address
-    governanceToken: "0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512",  // ← your address
+    anonymousVoting: "0x610178dA211FEF7D417bC0e6FeD39F05609AD788",  // ← your address
+    governanceToken: "0x8A791620dd6260079BF849Dc5567aDC3F2FdC318",  // ← your address
   },
   // ...
 };
@@ -502,13 +502,13 @@ Or click **Finalize Proposal** in the frontend after advancing time.
 
 | Index | Name | Visibility | Description |
 |-------|------|-----------|-------------|
-| 0 | `merkleRoot` | Public | Poseidon root of (address, balance) snapshot tree |
-| 1 | `nullifierHash` | Public | `Poseidon(secret, voterAddress, proposalId)` |
-| 2 | `proposalId` | Public | Links proof to specific proposal |
-| 3 | `voteValue` | Public | 0 = Against, 1 = For |
-| 4 | `whaleThresholdBps` | Public | e.g., 1000 = 10% |
-| 5 | `totalSupply` | Public | Token supply at snapshot block |
-| 6 | `isWhale` | Public (output) | 1 if `balance × 10000 ≥ whaleThresholdBps × totalSupply` |
+| 0 | `isWhale` | Public (output) | 1 if `balance × 10000 ≥ whaleThresholdBps × totalSupply` — outputs come first in snarkjs |
+| 1 | `merkleRoot` | Public | Poseidon root of (address, balance) snapshot tree |
+| 2 | `nullifierHash` | Public | `Poseidon(secret, voterAddress, proposalId)` |
+| 3 | `proposalId` | Public | Links proof to specific proposal |
+| 4 | `voteValue` | Public | 0 = Against, 1 = For |
+| 5 | `whaleThresholdBps` | Public | e.g., 1000 = 10% |
+| 6 | `totalSupply` | Public | Token supply at snapshot block |
 
 ---
 

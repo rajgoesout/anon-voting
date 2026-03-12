@@ -26,7 +26,7 @@ contract AnonymousVoting {
     mapping(uint256 => mapping(bytes32 => bool)) public nullifierUsed;
     uint256 public proposalCount;
 
-    uint256 public constant MIN_VOTING_DURATION = 1 hours;
+    uint256 public constant MIN_VOTING_DURATION = 1 minutes;
 
     event ProposalCreated(
         uint256 indexed proposalId,
@@ -102,14 +102,16 @@ contract AnonymousVoting {
         if (voteValue > 1) revert InvalidVoteValue();
         if (isWhale > 1) revert InvalidIsWhale();
 
+        // Order must match snarkjs public signal output:
+        // outputs first (isWhale), then public inputs in circuit declaration order
         uint256[7] memory publicSignals = [
-            uint256(p.merkleRoot),
-            uint256(nullifierHash),
-            proposalId,
-            uint256(voteValue),
-            p.whaleThresholdBps,
-            p.totalSupply,
-            uint256(isWhale)
+            uint256(isWhale),         // [0] output
+            uint256(p.merkleRoot),    // [1]
+            uint256(nullifierHash),   // [2]
+            proposalId,               // [3]
+            uint256(voteValue),       // [4]
+            p.whaleThresholdBps,      // [5]
+            p.totalSupply             // [6]
         ];
 
         if (!verifier.verifyProof(a, b, c, publicSignals)) revert ProofVerificationFailed();

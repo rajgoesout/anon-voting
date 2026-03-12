@@ -2,9 +2,8 @@
 // Fill in testnet/mainnet addresses after deployment
 const ADDRESSES: Record<number, { anonymousVoting: `0x${string}`; governanceToken: `0x${string}` }> = {
   31337: {
-    // anvil localhost — update after `forge script Deploy --broadcast`
-    anonymousVoting: "0x0000000000000000000000000000000000000000",
-    governanceToken: "0x0000000000000000000000000000000000000000",
+    anonymousVoting: "0x610178dA211FEF7D417bC0e6FeD39F05609AD788",
+    governanceToken: "0x8A791620dd6260079BF849Dc5567aDC3F2FdC318",
   },
   11155111: {
     // Sepolia — fill after deployment

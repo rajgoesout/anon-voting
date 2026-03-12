@@ -1,13 +1,20 @@
 "use client";
 
 import { useState, useCallback } from "react";
+import { usePublicClient, useChainId } from "wagmi";
 import { poseidonHash } from "@/lib/poseidon";
 import { generateGroth16Proof } from "@/lib/proof";
-import type { ProofInputs, ProofResult, ProofStep } from "@/types";
+import { buildSnapshotTree, reconstructBalances } from "@/lib/merkle";
+import { getContractAddresses, GOVERNANCE_TOKEN_ABI } from "@/lib/contracts";
+import { initPoseidon, poseidonHashSync } from "@/lib/poseidon";
+import type { ProofInputs, ProofResult, ProofStep, Transfer } from "@/types";
 
 export function useZKProof() {
   const [step, setStep] = useState<ProofStep>("idle");
   const [error, setError] = useState<string | null>(null);
+
+  const publicClient = usePublicClient();
+  const chainId = useChainId();
 
   const generateProof = useCallback(
     async (inputs: ProofInputs): Promise<ProofResult | null> => {
@@ -15,21 +22,76 @@ export function useZKProof() {
       setStep("snapshot");
 
       try {
-        // Step 1: Fetch token holder snapshot
-        // In production: query Transfer events from the blockchain
-        // For demo, we use a minimal mock path
+        if (!publicClient) throw new Error("No RPC client available");
+
+        let tokenAddress: `0x${string}`;
+        try {
+          tokenAddress = getContractAddresses(chainId).governanceToken;
+        } catch {
+          throw new Error("Contract addresses not configured for this network");
+        }
+
+        // Step 1: Fetch all Transfer events up to the snapshot block
+        const snapshotBlock = inputs.proposal.snapshotBlock;
+
+        const logs = await publicClient.getLogs({
+          address: tokenAddress,
+          event: {
+            type: "event",
+            name: "Transfer",
+            inputs: [
+              { name: "from", type: "address", indexed: true },
+              { name: "to", type: "address", indexed: true },
+              { name: "value", type: "uint256", indexed: false },
+            ],
+          },
+          fromBlock: 0n,
+          toBlock: snapshotBlock,
+        });
+
+        const transfers: Transfer[] = logs.map((l) => ({
+          from: l.args.from as string,
+          to: l.args.to as string,
+          value: l.args.value as bigint,
+          blockNumber: l.blockNumber ?? 0n,
+        }));
+
+        // Step 2: Build Merkle tree
         setStep("merkle");
 
-        // Step 2: Build Merkle tree and get proof path
-        // In production: use buildSnapshotTree + getMerkleProof from lib/merkle.ts
-        // For demo: generate dummy path (won't pass real circuit verification)
-        const dummyPathElements = Array(20).fill(0n);
-        const dummyPathIndices = Array(20).fill(0);
-        const dummyBalance = 1000n * 10n ** 18n; // demo balance
+        const { tree } = await buildSnapshotTree(transfers);
 
+        // Look up the voter's balance from the reconstructed balances
+        const balances = reconstructBalances(transfers);
+        const voterNorm = inputs.address.toLowerCase();
+        const balance = balances.get(voterNorm) ?? 0n;
+
+        if (balance === 0n) {
+          throw new Error(
+            "Your address has no token balance in the snapshot — you cannot vote on this proposal"
+          );
+        }
+
+        // Get Merkle proof for this voter
+        const idx = tree.addresses.indexOf(voterNorm);
+        if (idx === -1) {
+          throw new Error("Your address is not in the snapshot Merkle tree");
+        }
+
+        const { MerkleTree } = await import("fixed-merkle-tree");
+        await initPoseidon();
+        const merkleTree = new MerkleTree(20, tree.leaves, {
+          hashFunction: (left: bigint, right: bigint) => poseidonHashSync(left, right),
+          zeroElement: 0n,
+        });
+
+        const { pathElements, pathIndices } = merkleTree.proof(tree.leaves[idx]);
+        const realPathElements = (pathElements as (bigint | string)[]).map((e) => BigInt(e));
+        const realPathIndices = pathIndices as number[];
+
+        // Step 3: Compute nullifier
         setStep("witness");
 
-        // Step 3: Compute witness / nullifier
         const addressBigInt = BigInt(inputs.address);
         const secretBigInt = BigInt("0x" + inputs.secret);
         const proposalIdBigInt = BigInt(inputs.proposalId);
@@ -43,19 +105,17 @@ export function useZKProof() {
         const nullifierHashHex = ("0x" +
           nullifierHashBigInt.toString(16).padStart(64, "0")) as `0x${string}`;
 
-        // Compute leaf to get merkle root for demo
-        const leafHash = await poseidonHash(addressBigInt, dummyBalance);
         const merkleRootBigInt = BigInt(inputs.proposal.merkleRoot);
 
+        // Step 4: Generate Groth16 proof
         setStep("proving");
 
-        // Step 4: Generate Groth16 proof
         const result = await generateGroth16Proof({
           secret: secretBigInt,
           voterAddress: addressBigInt,
-          balance: dummyBalance,
-          pathElements: dummyPathElements,
-          pathIndices: dummyPathIndices,
+          balance,
+          pathElements: realPathElements,
+          pathIndices: realPathIndices,
           merkleRoot: merkleRootBigInt,
           nullifierHash: nullifierHashBigInt,
           proposalId: proposalIdBigInt,
@@ -64,9 +124,8 @@ export function useZKProof() {
           totalSupply: inputs.proposal.totalSupply,
         });
 
+        // Step 5: Formatted by generateGroth16Proof
         setStep("formatting");
-
-        // Step 5: Already formatted by generateGroth16Proof
         setStep("done");
         return result;
       } catch (e) {
@@ -76,7 +135,7 @@ export function useZKProof() {
         return null;
       }
     },
-    []
+    [publicClient, chainId]
   );
 
   const reset = useCallback(() => {

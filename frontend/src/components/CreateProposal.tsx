@@ -10,7 +10,7 @@ import { usePublicClient, useChainId } from "wagmi";
 export function CreateProposal() {
   const [description, setDescription] = useState("");
   const [thresholdPct, setThresholdPct] = useState("10");
-  const [durationHours, setDurationHours] = useState("168");
+  const [durationHours, setDurationHours] = useState("60");
   const [merkleRoot, setMerkleRoot] = useState<`0x${string}` | null>(null);
   const [computing, setComputing] = useState(false);
   const [status, setStatus] = useState("");
@@ -73,7 +73,7 @@ export function CreateProposal() {
     if (!merkleRoot) return;
 
     const bps = BigInt(Math.round(parseFloat(thresholdPct) * 100));
-    const duration = BigInt(parseFloat(durationHours) * 3600);
+    const duration = BigInt(Math.round(parseFloat(durationHours) * 60));
 
     try {
       await createProposal(description, merkleRoot, totalSupply, bps, duration);
@@ -115,7 +115,7 @@ export function CreateProposal() {
           />
         </div>
         <div>
-          <label className="block text-sm font-medium mb-1">Duration (hours)</label>
+          <label className="block text-sm font-medium mb-1">Duration (minutes)</label>
           <input
             type="number"
             value={durationHours}

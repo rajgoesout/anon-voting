@@ -1,4 +1,4 @@
-import { poseidonHash } from "./poseidon";
+import { poseidonHash, poseidonHashSync, initPoseidon } from "./poseidon";
 import type { Transfer, MerkleProofData } from "@/types";
 
 const TREE_DEPTH = 20;
@@ -43,6 +43,9 @@ export async function buildSnapshotTree(transfers: Transfer[]): Promise<{
 }> {
   const { MerkleTree } = await import("fixed-merkle-tree");
 
+  // Must be initialised before passing sync hash fn to MerkleTree
+  await initPoseidon();
+
   const balances = reconstructBalances(transfers);
 
   // Keep only positive balances
@@ -63,7 +66,7 @@ export async function buildSnapshotTree(transfers: Transfer[]): Promise<{
   }
 
   const tree = new MerkleTree(TREE_DEPTH, leaves, {
-    hashFunction: (left: bigint, right: bigint) => poseidonHash(left, right),
+    hashFunction: (left: bigint, right: bigint) => poseidonHashSync(left, right),
     zeroElement: 0n,
   });
 
@@ -88,8 +91,9 @@ export async function getMerkleProof(
     throw new Error(`Address ${targetAddress} not found in snapshot`);
   }
 
+  await initPoseidon();
   const tree = new MerkleTree(TREE_DEPTH, treeData.leaves, {
-    hashFunction: (left: bigint, right: bigint) => poseidonHash(left, right),
+    hashFunction: (left: bigint, right: bigint) => poseidonHashSync(left, right),
     zeroElement: 0n,
   });
 

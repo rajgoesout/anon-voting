@@ -55,11 +55,12 @@ export async function generateGroth16Proof(inputs: CircuitInputs): Promise<Proof
     ZKEY_PATH
   );
 
-  // publicSignals order: merkleRoot, nullifierHash, proposalId, voteValue,
-  //                      whaleThresholdBps, totalSupply, isWhale
-  const isWhale = BigInt(publicSignals[6]) === 1n;
+  // snarkjs public signal order: outputs first, then public inputs in circuit order
+  // [0]=isWhale(output) [1]=merkleRoot [2]=nullifierHash [3]=proposalId
+  // [4]=voteValue [5]=whaleThresholdBps [6]=totalSupply
+  const isWhale = BigInt(publicSignals[0]) === 1n;
   const nullifierHashHex = ("0x" +
-    BigInt(publicSignals[1]).toString(16).padStart(64, "0")) as `0x${string}`;
+    BigInt(publicSignals[2]).toString(16).padStart(64, "0")) as `0x${string}`;
 
   const a: [bigint, bigint] = [BigInt(proof.pi_a[0]), BigInt(proof.pi_a[1])];
   const b: [[bigint, bigint], [bigint, bigint]] = [
