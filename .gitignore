@@ -1,0 +1,11 @@
+node_modules/
+.env*
+out/
+cache/
+artifacts/
+.next/
+broadcast/
+circuits/build/
+*.zkey
+*.ptau
+.DS_Store
