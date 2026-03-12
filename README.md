@@ -431,7 +431,63 @@ Opens at `http://localhost:3000`.
 
 ---
 
-## Part 5 — Full End-to-End Flow
+## Part 5 — Relayer (Voter Identity Privacy)
+
+Without the relayer, the voter's wallet submits the `castVote` transaction directly, making the voter's address (`from`) visible on-chain. The ZK proof hides the vote direction and balance, but the sender identity leaks.
+
+The relayer solves this: the voter's browser generates the proof, then POSTs it to a local relayer server. The relayer submits the transaction from **its own address** — the voter's address never appears on-chain.
+
+> The contract does not use `msg.sender` in `castVote`, so this requires no contract changes.
+
+### 5.1 Create the relayer `.env`
+
+```bash
+cp relayer/.env.example relayer/.env
+```
+
+The `.env.example` already contains the correct values for a local anvil setup:
+- `RELAYER_PRIVATE_KEY` — anvil account[1] (different from the deployer)
+- `CONTRACT_ADDRESS` — must match the deployed `AnonymousVoting` address
+- `PORT=3001`
+- `CORS_ORIGIN=http://localhost:3000`
+
+Update `CONTRACT_ADDRESS` if you redeployed.
+
+### 5.2 Start the relayer
+
+```bash
+# In a dedicated terminal
+pnpm relay:dev
+```
+
+Or directly:
+
+```bash
+cd relayer
+pnpm dev
+```
+
+Output:
+```
+Relayer wallet: 0x70997970C51812dc3A010C7d01b50e0d17dc79C8
+ZK Vote Relayer running on http://localhost:3001
+  Contract : 0x610178dA211FEF7D417bC0e6FeD39F05609AD788
+  RPC      : http://127.0.0.1:8545
+  CORS     : http://localhost:3000
+```
+
+### 5.3 Health check
+
+```bash
+curl http://localhost:3001/health
+# {"status":"ok","relayer":"0x70997970...","balanceEth":"10000.0000","contract":"0x6101..."}
+```
+
+The relayer needs ETH to pay gas. The default anvil account[1] has 10,000 ETH, so this is not a concern for local dev.
+
+---
+
+## Part 6 — Full End-to-End Flow
 
 This section describes the complete sequence from contract deployment to casting an anonymous vote.
 
@@ -453,7 +509,8 @@ The browser:
 4. Computes `nullifierHash = Poseidon(secret, address, proposalId)`.
 5. Calls `snarkjs.groth16.fullProve()` with `vote.wasm` + `vote_final.zkey`.
 6. Formats `a, b, c` proof arrays for Solidity calldata.
-7. Calls `AnonymousVoting.castVote()` with the proof.
+7. POSTs `{proposalId, nullifierHash, voteValue, isWhale, a, b, c}` to the relayer at `http://localhost:3001/relay`.
+8. The relayer submits `AnonymousVoting.castVote()` from its own wallet — the voter's address never appears on-chain.
 
 > Proof generation takes 5–30 seconds in the browser depending on hardware.
 
@@ -494,6 +551,7 @@ Or click **Finalize Proposal** in the frontend after advancing time.
 | Trusted setup | see Part 2.3–2.5 | `contracts/` |
 | Copy artifacts | `cp circuits/build/vote_js/vote.wasm ../frontend/public/circuits/` | `contracts/` |
 | Update addresses | edit `frontend/src/lib/contracts.ts` | `frontend/` |
+| Start relayer | `pnpm relay:dev` | root |
 | Start frontend | `pnpm dev` | root |
 
 ---

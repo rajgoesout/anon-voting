@@ -3,6 +3,7 @@
   "private": true,
   "scripts": {
     "dev": "pnpm --filter frontend dev",
+    "relay:dev": "pnpm --filter zk-vote-relayer dev",
     "build:contracts": "cd contracts && forge build",
     "test:contracts": "cd contracts && forge test"
   },

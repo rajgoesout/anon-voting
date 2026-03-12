@@ -4,9 +4,10 @@ import { useState, useCallback } from "react";
 import { useAccount } from "wagmi";
 import { useZKProof } from "@/hooks/useZKProof";
 import { useGovernanceToken } from "@/hooks/useGovernanceToken";
-import { useCastVote } from "@/hooks/useAnonymousVoting";
 import { ProofProgress } from "./ProofProgress";
 import type { Proposal } from "@/types";
+
+const RELAYER_URL = process.env.NEXT_PUBLIC_RELAYER_URL ?? "http://localhost:3001";
 
 function randomHex(bytes = 32): string {
   const arr = new Uint8Array(bytes);
@@ -24,7 +25,7 @@ export function VotePanel({ proposal }: Props) {
   const { address } = useAccount();
   const { balance, totalSupply } = useGovernanceToken();
   const { generateProof, step, error, reset } = useZKProof();
-  const { castVote, isPending } = useCastVote();
+  const [isRelaying, setIsRelaying] = useState(false);
 
   const [secret, setSecret] = useState(() => randomHex());
   const [voteValue, setVoteValue] = useState<0 | 1 | null>(null);
@@ -60,24 +61,33 @@ export function VotePanel({ proposal }: Props) {
     if (!proofResult) return;
 
     try {
-      const txHash = await castVote(
-        BigInt(proposal.id),
-        proofResult.nullifierHash,
-        voteValue,
-        proofResult.isWhale ? 1 : 0,
-        proofResult.a,
-        proofResult.b,
-        proofResult.c
-      );
+      setIsRelaying(true);
+      const resp = await fetch(`${RELAYER_URL}/relay`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          proposalId: proposal.id,
+          nullifierHash: proofResult.nullifierHash,
+          voteValue,
+          isWhale: proofResult.isWhale ? 1 : 0,
+          a: proofResult.a.map(String),
+          b: proofResult.b.map((row) => row.map(String)),
+          c: proofResult.c.map(String),
+        }),
+      });
+      const data = await resp.json();
+      if (!resp.ok) throw new Error(data.error ?? "Relay failed");
       setResult({
-        txHash: txHash as string,
+        txHash: data.txHash,
         nullifierHash: proofResult.nullifierHash,
         isWhale: proofResult.isWhale,
       });
     } catch (e) {
-      console.error("castVote failed", e);
+      console.error("relay failed", e);
+    } finally {
+      setIsRelaying(false);
     }
-  }, [address, voteValue, secret, proposal, generateProof, castVote, reset]);
+  }, [address, voteValue, secret, proposal, generateProof, reset]);
 
   if (!address) {
     return (
@@ -146,8 +156,8 @@ export function VotePanel({ proposal }: Props) {
             ↺
           </button>
         </div>
-        <p className="text-xs text-amber-600 mt-1">
-          ⚠ Save this secret — you need it to prove your vote if challenged.
+        <p className="text-xs text-red-600 mt-1">
+          🔒 Never share this secret. It binds your identity to this nullifier — revealing it exposes which address voted.
         </p>
       </div>
 
@@ -170,10 +180,10 @@ export function VotePanel({ proposal }: Props) {
 
       <button
         onClick={handleVote}
-        disabled={voteValue === null || !secret || isGenerating || isPending}
+        disabled={voteValue === null || !secret || isGenerating || isRelaying}
         className="w-full rounded-lg bg-indigo-600 py-3 text-white font-semibold hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed"
       >
-        {isGenerating ? "Generating proof…" : isPending ? "Submitting…" : "Generate Proof & Vote"}
+        {isGenerating ? "Generating proof…" : isRelaying ? "Relaying (anonymous)…" : "Generate Proof & Vote"}
       </button>
 
       <ProofProgress step={step} error={error} />
