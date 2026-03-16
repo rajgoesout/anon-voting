@@ -1,5 +1,7 @@
 "use client";
 
+import Link from "next/link";
+import { useEffect, useState } from "react";
 import { useProposal, useFinalizeProposal } from "@/hooks/useAnonymousVoting";
 import { VotePanel } from "@/components/VotePanel";
 import { WhaleActivity } from "@/components/WhaleActivity";
@@ -11,11 +13,19 @@ interface Props {
 export function ProposalDetail({ id }: Props) {
   const { data: proposal, isLoading } = useProposal(id);
   const { finalizeProposal, isPending } = useFinalizeProposal();
+  const [now, setNow] = useState(() => Math.floor(Date.now() / 1000));
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      setNow(Math.floor(Date.now() / 1000));
+    }, 1000);
+
+    return () => window.clearInterval(timer);
+  }, []);
 
   if (isLoading) return <div className="animate-pulse h-48 bg-gray-100 rounded-lg" />;
   if (!proposal) return <div className="text-center py-12 text-gray-500">Proposal not found.</div>;
 
-  const now = Math.floor(Date.now() / 1000);
   const canFinalize = !proposal.finalized && now > Number(proposal.deadline);
   const deadlineDate = new Date(Number(proposal.deadline) * 1000).toLocaleString();
 
@@ -36,6 +46,14 @@ export function ProposalDetail({ id }: Props) {
           <p className="text-sm text-gray-500">
             Whale threshold: {(Number(proposal.whaleThresholdBps) / 100).toFixed(2)}%
           </p>
+          <div className="mt-3">
+            <Link
+              href={`/proposal/${id}/verify`}
+              className="inline-flex rounded border border-indigo-300 px-3 py-1.5 text-sm text-indigo-700 hover:bg-indigo-50"
+            >
+              Verify Submitted Proofs
+            </Link>
+          </div>
           <p className="text-xs text-gray-400 font-mono break-all mt-1">
             Merkle root: {proposal.merkleRoot}
           </p>

@@ -2,8 +2,8 @@
 // Fill in testnet/mainnet addresses after deployment
 const ADDRESSES: Record<number, { anonymousVoting: `0x${string}`; governanceToken: `0x${string}` }> = {
   31337: {
-    anonymousVoting: "0x610178dA211FEF7D417bC0e6FeD39F05609AD788",
-    governanceToken: "0x8A791620dd6260079BF849Dc5567aDC3F2FdC318",
+    anonymousVoting: "0x9fE46736679d2D9a65F0992F2272dE9f3c7fa6e0",
+    governanceToken: "0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512",
   },
   11155111: {
     // Sepolia — fill after deployment
@@ -117,6 +117,13 @@ export const ANONYMOUS_VOTING_ABI = [
     stateMutability: "view",
   },
   {
+    type: "function",
+    name: "verifier",
+    inputs: [],
+    outputs: [{ name: "", type: "address" }],
+    stateMutability: "view",
+  },
+  {
     type: "event",
     name: "ProposalCreated",
     inputs: [
@@ -152,6 +159,21 @@ export const ANONYMOUS_VOTING_ABI = [
       { name: "votesFor", type: "uint256", indexed: false },
       { name: "votesAgainst", type: "uint256", indexed: false },
     ],
+  },
+] as const;
+
+export const VERIFIER_ABI = [
+  {
+    type: "function",
+    name: "verifyProof",
+    inputs: [
+      { name: "a", type: "uint256[2]" },
+      { name: "b", type: "uint256[2][2]" },
+      { name: "c", type: "uint256[2]" },
+      { name: "input", type: "uint256[7]" },
+    ],
+    outputs: [{ name: "", type: "bool" }],
+    stateMutability: "view",
   },
 ] as const;
 
