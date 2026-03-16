@@ -32,6 +32,7 @@ export const ANONYMOUS_VOTING_ABI = [
       { name: "merkleRoot", type: "bytes32" },
       { name: "totalSupply", type: "uint256" },
       { name: "whaleThresholdBps", type: "uint256" },
+      { name: "snapshotBlock", type: "uint256" },
       { name: "votingDuration", type: "uint256" },
     ],
     outputs: [{ name: "proposalId", type: "uint256" }],

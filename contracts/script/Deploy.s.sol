@@ -2,7 +2,7 @@
 pragma solidity ^0.8.24;
 
 import "forge-std/Script.sol";
-import "../test/MockVerifier.sol";
+import "../src/Verifier.sol";
 import "../src/GovernanceToken.sol";
 import "../src/AnonymousVoting.sol";
 
@@ -13,8 +13,8 @@ contract Deploy is Script {
 
         vm.startBroadcast(deployerPrivateKey);
 
-        MockVerifier verifier = new MockVerifier();
-        console.log("MockVerifier deployed at:", address(verifier));
+        Groth16Verifier verifier = new Groth16Verifier();
+        console.log("Groth16Verifier deployed at:", address(verifier));
 
         GovernanceToken token = new GovernanceToken(deployer);
         console.log("GovernanceToken deployed at:", address(token));

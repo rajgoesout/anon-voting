@@ -2,7 +2,6 @@
 
 import { useState } from "react";
 import { useCreateProposal } from "@/hooks/useAnonymousVoting";
-import { useGovernanceToken } from "@/hooks/useGovernanceToken";
 import { getContractAddresses, GOVERNANCE_TOKEN_ABI } from "@/lib/contracts";
 import { buildSnapshotTree } from "@/lib/merkle";
 import { usePublicClient, useChainId } from "wagmi";
@@ -11,12 +10,15 @@ export function CreateProposal() {
   const [description, setDescription] = useState("");
   const [thresholdPct, setThresholdPct] = useState("10");
   const [durationHours, setDurationHours] = useState("60");
-  const [merkleRoot, setMerkleRoot] = useState<`0x${string}` | null>(null);
+  const [snapshotData, setSnapshotData] = useState<{
+    merkleRoot: `0x${string}`;
+    snapshotBlock: bigint;
+    totalSupply: bigint;
+  } | null>(null);
   const [computing, setComputing] = useState(false);
   const [status, setStatus] = useState("");
 
   const { createProposal, isPending } = useCreateProposal();
-  const { totalSupply } = useGovernanceToken();
   const publicClient = usePublicClient();
   const chainId = useChainId();
 
@@ -35,6 +37,17 @@ export function CreateProposal() {
         return;
       }
 
+      const snapshotBlock = await publicClient.getBlockNumber();
+
+      setStatus(`Using snapshot block ${snapshotBlock.toString()}…`);
+
+      const totalSupply = await publicClient.readContract({
+        address: tokenAddress,
+        abi: GOVERNANCE_TOKEN_ABI,
+        functionName: "totalSupply",
+        blockNumber: snapshotBlock,
+      });
+
       const logs = await publicClient.getLogs({
         address: tokenAddress,
         event: {
@@ -47,7 +60,7 @@ export function CreateProposal() {
           ],
         },
         fromBlock: 0n,
-        toBlock: "latest",
+        toBlock: snapshotBlock,
       });
 
       const transfers = logs.map((l) => ({
@@ -59,8 +72,10 @@ export function CreateProposal() {
 
       setStatus("Building Merkle tree…");
       const { root } = await buildSnapshotTree(transfers);
-      setMerkleRoot(root);
-      setStatus(`Merkle root computed: ${root.slice(0, 18)}…`);
+      setSnapshotData({ merkleRoot: root, snapshotBlock, totalSupply });
+      setStatus(
+        `Snapshot locked at block ${snapshotBlock.toString()} with root ${root.slice(0, 18)}…`
+      );
     } catch (e) {
       setStatus(`Error: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
@@ -70,15 +85,22 @@ export function CreateProposal() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!merkleRoot) return;
+    if (!snapshotData) return;
 
     const bps = BigInt(Math.round(parseFloat(thresholdPct) * 100));
     const duration = BigInt(Math.round(parseFloat(durationHours) * 60));
 
     try {
-      await createProposal(description, merkleRoot, totalSupply, bps, duration);
+      await createProposal(
+        description,
+        snapshotData.merkleRoot,
+        snapshotData.totalSupply,
+        bps,
+        snapshotData.snapshotBlock,
+        duration
+      );
       setDescription("");
-      setMerkleRoot(null);
+      setSnapshotData(null);
       setStatus("Proposal created!");
     } catch (e) {
       setStatus(`Error: ${e instanceof Error ? e.message : String(e)}`);
@@ -135,17 +157,25 @@ export function CreateProposal() {
         >
           {computing ? "Computing…" : "Compute Snapshot Merkle Root"}
         </button>
-        {merkleRoot && (
-          <p className="mt-2 text-xs font-mono text-gray-600 break-all">
-            Root: {merkleRoot}
-          </p>
+        {snapshotData && (
+          <>
+            <p className="mt-2 text-xs text-gray-600">
+              Snapshot block: {snapshotData.snapshotBlock.toString()}
+            </p>
+            <p className="mt-1 text-xs text-gray-600">
+              Snapshot total supply: {snapshotData.totalSupply.toString()}
+            </p>
+            <p className="mt-1 text-xs font-mono text-gray-600 break-all">
+              Root: {snapshotData.merkleRoot}
+            </p>
+          </>
         )}
         {status && <p className="mt-1 text-xs text-gray-500">{status}</p>}
       </div>
 
       <button
         type="submit"
-        disabled={!merkleRoot || !description || isPending}
+        disabled={!snapshotData || !description || isPending}
         className="w-full rounded-lg bg-indigo-600 py-2 text-white font-semibold hover:bg-indigo-700 disabled:opacity-50"
       >
         {isPending ? "Creating…" : "Create Proposal"}

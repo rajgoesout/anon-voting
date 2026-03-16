@@ -31,7 +31,7 @@ contract AnonymousVotingTest is Test {
     }
 
     function _createProposal() internal returns (uint256) {
-        return voting.createProposal("Test proposal", MERKLE_ROOT, TOTAL_SUPPLY, WHALE_BPS, DURATION);
+        return voting.createProposal("Test proposal", MERKLE_ROOT, TOTAL_SUPPLY, WHALE_BPS, block.number, DURATION);
     }
 
     // --- createProposal ---
@@ -47,32 +47,38 @@ contract AnonymousVotingTest is Test {
         assertEq(p.description, "Test proposal");
         assertEq(p.merkleRoot, MERKLE_ROOT);
         assertEq(p.whaleThresholdBps, WHALE_BPS);
+        assertEq(p.snapshotBlock, block.number);
         assertFalse(p.finalized);
     }
 
     function test_CreateProposal_InvalidMerkleRoot() public {
         vm.expectRevert(AnonymousVoting.InvalidMerkleRoot.selector);
-        voting.createProposal("Test", bytes32(0), TOTAL_SUPPLY, WHALE_BPS, DURATION);
+        voting.createProposal("Test", bytes32(0), TOTAL_SUPPLY, WHALE_BPS, block.number, DURATION);
     }
 
     function test_CreateProposal_InvalidWhaleThreshold_Zero() public {
         vm.expectRevert(AnonymousVoting.InvalidWhaleThreshold.selector);
-        voting.createProposal("Test", MERKLE_ROOT, TOTAL_SUPPLY, 0, DURATION);
+        voting.createProposal("Test", MERKLE_ROOT, TOTAL_SUPPLY, 0, block.number, DURATION);
     }
 
     function test_CreateProposal_InvalidWhaleThreshold_TooHigh() public {
         vm.expectRevert(AnonymousVoting.InvalidWhaleThreshold.selector);
-        voting.createProposal("Test", MERKLE_ROOT, TOTAL_SUPPLY, 10_001, DURATION);
+        voting.createProposal("Test", MERKLE_ROOT, TOTAL_SUPPLY, 10_001, block.number, DURATION);
     }
 
     function test_CreateProposal_DurationTooShort() public {
         vm.expectRevert(AnonymousVoting.VotingDurationTooShort.selector);
-        voting.createProposal("Test", MERKLE_ROOT, TOTAL_SUPPLY, WHALE_BPS, 30 seconds);
+        voting.createProposal("Test", MERKLE_ROOT, TOTAL_SUPPLY, WHALE_BPS, block.number, 30 seconds);
     }
 
     function test_CreateProposal_InvalidTotalSupply() public {
         vm.expectRevert(AnonymousVoting.InvalidTotalSupply.selector);
-        voting.createProposal("Test", MERKLE_ROOT, 0, WHALE_BPS, DURATION);
+        voting.createProposal("Test", MERKLE_ROOT, 0, WHALE_BPS, block.number, DURATION);
+    }
+
+    function test_CreateProposal_FutureSnapshotBlock_Reverts() public {
+        vm.expectRevert(AnonymousVoting.InvalidSnapshotBlock.selector);
+        voting.createProposal("Test", MERKLE_ROOT, TOTAL_SUPPLY, WHALE_BPS, block.number + 1, DURATION);
     }
 
     // --- castVote ---

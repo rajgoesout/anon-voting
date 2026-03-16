@@ -38,13 +38,13 @@
  *      cp circuits/build/vote_final.zkey   ../../frontend/public/circuits/vote_final.zkey
  *
  * PUBLIC SIGNALS (order matters — must match AnonymousVoting.sol):
- *   index 0: merkleRoot
- *   index 1: nullifierHash
- *   index 2: proposalId
- *   index 3: voteValue
- *   index 4: whaleThresholdBps
- *   index 5: totalSupply
- *   index 6: isWhale (OUTPUT — constrained by circuit)
+ *   index 0: isWhale (OUTPUT — snarkjs emits outputs first)
+ *   index 1: merkleRoot
+ *   index 2: nullifierHash
+ *   index 3: proposalId
+ *   index 4: voteValue
+ *   index 5: whaleThresholdBps
+ *   index 6: totalSupply
  */
 
 pragma circom 2.0.0;

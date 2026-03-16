@@ -316,17 +316,15 @@ forge script script/Deploy.s.sol \
   -vvv
 ```
 
-The script deploys in order: `MockVerifier` → `GovernanceToken` → `AnonymousVoting`. It prints all three addresses:
+The script deploys in order: `Groth16Verifier` → `GovernanceToken` → `AnonymousVoting`. It prints all three addresses:
 
 ```
-MockVerifier deployed at:   0x5FbDB2315678afecb367f032d93F642f64180aa3
+Groth16Verifier deployed at: 0x5FbDB2315678afecb367f032d93F642f64180aa3
 GovernanceToken deployed at: 0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512
 AnonymousVoting deployed at: 0x9fE46736679d2D9a65F0992F2272dE9f3c7fa6e0
 ```
 
 Save these — you need them in the next step.
-
-> If you've already run the real Verifier.sol setup (Part 2), replace `MockVerifier` in `Deploy.s.sol` with the real verifier contract name before broadcasting.
 
 ### 3.4 Run integration tests against the fork
 
@@ -339,7 +337,7 @@ forge test \
   -vvv
 ```
 
-This runs the same 23 unit tests but against the live forked state. The MockVerifier means ZK proofs are bypassed — all vote tests pass immediately.
+This runs the same 23 unit tests but against the live forked state. The tests themselves still use `MockVerifier`, so ZK proofs are bypassed inside the test harness even though the default deploy script now uses the real `Groth16Verifier`.
 
 ### 3.5 Manual cast commands (optional)
 
@@ -358,11 +356,12 @@ cast call <GOVERNANCE_TOKEN_ADDR> \
 
 # Create a test proposal (bytes32 merkleRoot as 0x000...001)
 cast send <ANONYMOUS_VOTING_ADDR> \
-  "createProposal(string,bytes32,uint256,uint256,uint256)" \
+  "createProposal(string,bytes32,uint256,uint256,uint256,uint256)" \
   "Test proposal" \
   "0x0000000000000000000000000000000000000000000000000000000000000001" \
   "1000000000000000000000000" \
   "1000" \
+  "<SNAPSHOT_BLOCK>" \
   "604800" \
   --rpc-url http://127.0.0.1:8545 \
   --private-key $PRIVATE_KEY
@@ -563,7 +562,7 @@ This section describes the complete sequence from contract deployment to casting
 
 ### Step 1 — Create a proposal (frontend or cast)
 
-In the frontend, connect your wallet, fill in the "Create Proposal" form, click **Compute Snapshot Merkle Root** (this queries Transfer events from the local chain), then submit. The Merkle root is computed from the current holder snapshot.
+In the frontend, connect your wallet, fill in the "Create Proposal" form, click **Compute Snapshot Merkle Root**, then submit. The frontend first locks a specific `snapshotBlock`, then computes the Merkle root and reads `totalSupply` for that exact block before calling `createProposal`.
 
 ### Step 2 — Prepare proof inputs (browser)
 
@@ -575,7 +574,7 @@ In the frontend, navigate to the proposal → `VotePanel`:
 
 The browser:
 
-1. Queries Transfer events from the contract's `snapshotBlock` to reconstruct balances.
+1. Queries Transfer events from block `0` up to the proposal's `snapshotBlock` to reconstruct balances.
 2. Builds a Poseidon Merkle tree of all holders.
 3. Computes your Merkle path.
 4. Computes `nullifierHash = Poseidon(secret, address, proposalId)`.
@@ -642,9 +641,191 @@ Or click **Finalize Proposal** in the frontend after advancing time.
 
 ---
 
+## Calling `verifyProof` Exactly
+
+Two separate calls matter here:
+
+1. `Groth16Verifier.verifyProof(a, b, c, publicSignals)` checks whether the proof is valid.
+2. `AnonymousVoting.castVote(proposalId, nullifierHash, voteValue, isWhale, a, b, c)` is the real voting entrypoint and internally rebuilds `publicSignals` before calling `verifyProof`.
+
+Important correction: a non-whale voter does **not** produce an invalid proof. They produce a **valid** proof whose public output is `isWhale = 0`. Whale voters produce a **valid** proof whose public output is `isWhale = 1`.
+
+### What goes into `verifyProof`
+
+The verifier signature is:
+
+```solidity
+function verifyProof(
+    uint256[2] calldata a,
+    uint256[2][2] calldata b,
+    uint256[2] calldata c,
+    uint256[7] calldata publicSignals
+) external view returns (bool);
+```
+
+Map your `snarkjs` output like this:
+
+```text
+proof.pi_a -> a = [pi_a[0], pi_a[1]]
+proof.pi_b -> b = [[pi_b[0][1], pi_b[0][0]], [pi_b[1][1], pi_b[1][0]]]
+proof.pi_c -> c = [pi_c[0], pi_c[1]]
+public.json -> publicSignals exactly as emitted by snarkjs
+```
+
+The `b` array must be reordered exactly as above. This repo already does that in [proof.ts](/Users/raj/dev/kwala/anon-voting/frontend/src/lib/proof.ts).
+
+### `publicSignals` order
+
+Use this exact order:
+
+```text
+publicSignals[0] = isWhale
+publicSignals[1] = merkleRoot
+publicSignals[2] = nullifierHash
+publicSignals[3] = proposalId
+publicSignals[4] = voteValue
+publicSignals[5] = whaleThresholdBps
+publicSignals[6] = totalSupply
+```
+
+That order is enforced in [AnonymousVoting.sol](/Users/raj/dev/kwala/anon-voting/contracts/src/AnonymousVoting.sol) and must match the circuit output order.
+
+### Direct verifier call with the checked-in sample proof
+
+Using the current checked-in files:
+
+- [proof.json](/Users/raj/dev/kwala/anon-voting/contracts/circuits/build/proof.json)
+- [public.json](/Users/raj/dev/kwala/anon-voting/contracts/circuits/build/public.json)
+
+the exact Solidity arguments are:
+
+```text
+a = [
+  12472914312737636811347307842788773051755724196037724470762126623208329082845,
+  17125918841847538001226743052918113981393070774074937215351343065710279190174
+]
+
+b = [
+  [
+    13316199290824921864388843935043170811490389689599903694377958113728821724487,
+    3207690585627279667222546444779204611953991254198462100130332970012255959027
+  ],
+  [
+    16597733531601378053991249421353005495822086083367379157580643714684518625125,
+    13888535118599279860106084626949534552065350070663188342813458864670672409178
+  ]
+]
+
+c = [
+  6591375277283859117440711145694368604568770498840688111316720518401833356876,
+  8913562152110469152972974287011025948548824595144754495568345277540103002976
+]
+
+publicSignals = [
+  0,
+  9422168850547513324964282358817941077575013683908892985936811464479841607707,
+  7982188534737865902703884740975986036599116980257042523917003927210349271917,
+  0,
+  1,
+  1000,
+  1000000000000000000000000
+]
+```
+
+If your verifier is deployed at `0xVerifier`, call it with `cast` like this:
+
+```bash
+cast call 0xVerifier \
+  "verifyProof(uint256[2],uint256[2][2],uint256[2],uint256[7])(bool)" \
+  "[12472914312737636811347307842788773051755724196037724470762126623208329082845,17125918841847538001226743052918113981393070774074937215351343065710279190174]" \
+  "[[13316199290824921864388843935043170811490389689599903694377958113728821724487,3207690585627279667222546444779204611953991254198462100130332970012255959027],[16597733531601378053991249421353005495822086083367379157580643714684518625125,13888535118599279860106084626949534552065350070663188342813458864670672409178]]" \
+  "[6591375277283859117440711145694368604568770498840688111316720518401833356876,8913562152110469152972974287011025948548824595144754495568345277540103002976]" \
+  "[0,9422168850547513324964282358817941077575013683908892985936811464479841607707,7982188534737865902703884740975986036599116980257042523917003927210349271917,0,1,1000,1000000000000000000000000]" \
+  --rpc-url http://127.0.0.1:8545
+```
+
+Expected result:
+
+```text
+true
+```
+
+This sample proof is valid and proves a **non-whale** vote because `publicSignals[0] = 0`.
+
+### What you pass to `castVote`
+
+You do **not** pass `publicSignals` into `castVote`. You pass:
+
+```text
+proposalId
+nullifierHash
+voteValue
+isWhale
+a
+b
+c
+```
+
+The contract then reconstructs:
+
+```solidity
+[
+    uint256(isWhale),
+    uint256(p.merkleRoot),
+    uint256(nullifierHash),
+    proposalId,
+    uint256(voteValue),
+    p.whaleThresholdBps,
+    p.totalSupply
+]
+```
+
+and forwards that to `verifyProof`.
+
+So the exact rule is:
+
+- `nullifierHash` must equal `publicSignals[2]`
+- `voteValue` must equal `publicSignals[4]`
+- `isWhale` must equal `publicSignals[0]`
+- the proposal's stored `merkleRoot`, `whaleThresholdBps`, and `totalSupply` must match `publicSignals[1]`, `[5]`, and `[6]`
+
+If any of those disagree with the proof, [AnonymousVoting.sol](/Users/raj/dev/kwala/anon-voting/contracts/src/AnonymousVoting.sol) reverts with `ProofVerificationFailed()`.
+
+### Exact `castVote` example
+
+Using the same sample proof and assuming proposal `0` was created with:
+
+- `merkleRoot = 0x14d4c232885c94c7cc0e37aabec6ebce3eac89d3b40662dc96f4c6c55c0e601b`
+- `whaleThresholdBps = 1000`
+- `totalSupply = 1000000000000000000000000`
+
+and the proof's nullifier:
+
+- `nullifierHash = 0x11a5c2341707d20435c36047ab5a56f9457d5b5265615a3bdd89aa61a5e79b6d`
+
+then the vote call is:
+
+```bash
+cast send <ANONYMOUS_VOTING_ADDR> \
+  "castVote(uint256,bytes32,uint8,uint8,uint256[2],uint256[2][2],uint256[2])" \
+  0 \
+  0x11a5c2341707d20435c36047ab5a56f9457d5b5265615a3bdd89aa61a5e79b6d \
+  1 \
+  0 \
+  "[12472914312737636811347307842788773051755724196037724470762126623208329082845,17125918841847538001226743052918113981393070774074937215351343065710279190174]" \
+  "[[13316199290824921864388843935043170811490389689599903694377958113728821724487,3207690585627279667222546444779204611953991254198462100130332970012255959027],[16597733531601378053991249421353005495822086083367379157580643714684518625125,13888535118599279860106084626949534552065350070663188342813458864670672409178]]" \
+  "[6591375277283859117440711145694368604568770498840688111316720518401833356876,8913562152110469152972974287011025948548824595144754495568345277540103002976]" \
+  --rpc-url http://127.0.0.1:8545 \
+  --private-key $PRIVATE_KEY
+```
+
+Replace `<ANONYMOUS_VOTING_ADDR>` and the `nullifierHash` with your actual deployed contract and actual proof output. The values above only succeed if the stored proposal fields exactly match the proof's public signals.
+
+---
+
 ## Security Notes
 
-- **MockVerifier is for testing only.** `MockVerifier.sol` always returns `true`. Replace it by running the trusted setup (Part 2) and re-deploying with the generated `Verifier.sol`.
+- **MockVerifier is for testing only.** `MockVerifier.sol` always returns `true`. The default deploy script now deploys the generated `Groth16Verifier`, while tests still use `MockVerifier`.
 - **Nullifier linkability.** `Poseidon(secret, address, proposalId)` binds your secret to a specific proposal. Reusing the same secret across proposals lets an observer link those nullifiers to the same voter. Generate a fresh secret per vote.
 - **Merkle snapshot integrity.** The `merkleRoot` is computed from Transfer events up to `snapshotBlock`. Anyone can independently verify it by replaying the same events. The contract stores the root at proposal creation time and it is immutable thereafter.
 - **Trusted setup.** Groth16 requires a trusted setup. For production: use the Hermez ceremony ptau (Option B above) for Phase 1, and run Phase 2 with multiple independent contributors. The security guarantee is "at least one contributor destroyed their randomness."

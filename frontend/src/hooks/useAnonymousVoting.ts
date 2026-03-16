@@ -82,6 +82,7 @@ export function useCreateProposal() {
     merkleRoot: `0x${string}`,
     totalSupply: bigint,
     whaleThresholdBps: bigint,
+    snapshotBlock: bigint,
     votingDuration: bigint
   ) => {
     if (!address) throw new Error("Contract address not configured");
@@ -89,7 +90,7 @@ export function useCreateProposal() {
       address,
       abi: ANONYMOUS_VOTING_ABI,
       functionName: "createProposal",
-      args: [description, merkleRoot, totalSupply, whaleThresholdBps, votingDuration],
+      args: [description, merkleRoot, totalSupply, whaleThresholdBps, snapshotBlock, votingDuration],
     });
   };
 

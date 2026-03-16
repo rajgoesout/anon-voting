@@ -56,6 +56,7 @@ contract AnonymousVoting {
     error VotingStillActive();
     error AlreadyFinalized();
     error InvalidTotalSupply();
+    error InvalidSnapshotBlock();
 
     constructor(address _verifier) {
         verifier = IVerifier(_verifier);
@@ -66,10 +67,12 @@ contract AnonymousVoting {
         bytes32 merkleRoot,
         uint256 totalSupply,
         uint256 whaleThresholdBps,
+        uint256 snapshotBlock,
         uint256 votingDuration
     ) external returns (uint256 proposalId) {
         if (merkleRoot == bytes32(0)) revert InvalidMerkleRoot();
         if (whaleThresholdBps == 0 || whaleThresholdBps > 10_000) revert InvalidWhaleThreshold();
+        if (snapshotBlock > block.number) revert InvalidSnapshotBlock();
         if (votingDuration < MIN_VOTING_DURATION) revert VotingDurationTooShort();
         if (totalSupply == 0) revert InvalidTotalSupply();
 
@@ -79,7 +82,7 @@ contract AnonymousVoting {
         p.merkleRoot = merkleRoot;
         p.totalSupply = totalSupply;
         p.whaleThresholdBps = whaleThresholdBps;
-        p.snapshotBlock = block.number;
+        p.snapshotBlock = snapshotBlock;
         p.startTime = block.timestamp;
         p.deadline = block.timestamp + votingDuration;
 
