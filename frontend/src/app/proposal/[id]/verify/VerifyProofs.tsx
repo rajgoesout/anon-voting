@@ -6,6 +6,7 @@ import { decodeFunctionData } from "viem";
 import { useChainId, usePublicClient } from "wagmi";
 import { useProposal, useVoteCastEvents } from "@/hooks/useAnonymousVoting";
 import { ANONYMOUS_VOTING_ABI, VERIFIER_ABI, getContractAddresses } from "@/lib/contracts";
+import type { VoteEvent } from "@/types";
 
 interface Props {
   id: number;
@@ -34,7 +35,7 @@ export function VerifyProofs({ id }: Props) {
   const proposalWhaleThresholdBps = proposal?.whaleThresholdBps;
   const proposalTotalSupply = proposal?.totalSupply;
   const voteEventsKey = voteEvents
-    .map((event) => `${event.transactionHash}:${event.blockNumber.toString()}:${event.voteValue}`)
+    .map((event: VoteEvent) => `${event.transactionHash}:${event.blockNumber.toString()}:${event.voteValue}`)
     .join("|");
 
   voteEventsRef.current = voteEvents;

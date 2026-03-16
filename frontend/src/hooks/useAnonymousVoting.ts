@@ -1,8 +1,9 @@
 "use client";
 
 import { useReadContract, useWriteContract, useWatchContractEvent, useChainId, usePublicClient } from "wagmi";
-import { useState, useEffect } from "react";
+import { useEffect, useState } from "react";
 import { getContractAddresses, ANONYMOUS_VOTING_ABI } from "@/lib/contracts";
+import { getDefaultTransferStartBlock } from "@/lib/transfers";
 import type { Proposal, VoteEvent, WhaleEvent } from "@/types";
 
 function useVotingAddress() {
@@ -58,19 +59,7 @@ export function useProposal(proposalId: number) {
 
 export function useProposals(): { proposals: Proposal[]; isLoading: boolean } {
   const { data: count } = useProposalCount();
-  const address = useVotingAddress();
-  const [proposals, setProposals] = useState<Proposal[]>([]);
-
-  // Simple approach: fetch individual proposals
-  // In production, use event logs for efficiency
-  const n = count ? Number(count) : 0;
-
-  useEffect(() => {
-    if (!address || n === 0) return;
-    setProposals([]);
-  }, [address, n]);
-
-  return { proposals, isLoading: false };
+  return { proposals: [], isLoading: !count };
 }
 
 export function useCreateProposal() {
@@ -169,18 +158,45 @@ function mapVoteLog(l: { args: { proposalId?: bigint; voteValue?: number }; bloc
 export function useVoteCastEvents(proposalId: number) {
   const address = useVotingAddress();
   const publicClient = usePublicClient();
+  const chainId = useChainId();
   const [events, setEvents] = useState<VoteEvent[]>([]);
 
   useEffect(() => {
     if (!address || !publicClient) return;
-    publicClient.getLogs({
-      address,
-      event: VOTE_CAST_EVENT,
-      args: { proposalId: BigInt(proposalId) },
-      fromBlock: 0n,
-      toBlock: "latest",
-    }).then((logs) => setEvents(logs.map(mapVoteLog))).catch(console.error);
-  }, [address, publicClient, proposalId]);
+    let cancelled = false;
+
+    const fetchLogs = async () => {
+      try {
+        const latestBlock = await publicClient.getBlockNumber();
+        const startBlock = getDefaultTransferStartBlock(chainId);
+        const logs = [];
+
+        for (let fromBlock = startBlock; fromBlock <= latestBlock; fromBlock += 45_000n) {
+          const toBlock = fromBlock + 44_999n > latestBlock ? latestBlock : fromBlock + 44_999n;
+          const chunk = await publicClient.getLogs({
+            address,
+            event: VOTE_CAST_EVENT,
+            args: { proposalId: BigInt(proposalId) },
+            fromBlock,
+            toBlock,
+          });
+          logs.push(...chunk);
+        }
+
+        if (!cancelled) {
+          setEvents(logs.map(mapVoteLog));
+        }
+      } catch (error) {
+        console.error(error);
+      }
+    };
+
+    void fetchLogs();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [address, publicClient, proposalId, chainId]);
 
   useWatchContractEvent({
     address,
@@ -194,7 +210,7 @@ export function useVoteCastEvents(proposalId: number) {
         blockNumber: l.blockNumber ?? 0n,
         transactionHash: (l.transactionHash ?? "0x") as `0x${string}`,
       }));
-      setEvents((prev) => {
+      setEvents((prev: VoteEvent[]) => {
         const hashes = new Set(prev.map((e) => e.transactionHash));
         return [...prev, ...newEvents.filter((e) => !hashes.has(e.transactionHash))];
       });
@@ -207,18 +223,45 @@ export function useVoteCastEvents(proposalId: number) {
 export function useWhaleEvents(proposalId: number) {
   const address = useVotingAddress();
   const publicClient = usePublicClient();
+  const chainId = useChainId();
   const [events, setEvents] = useState<WhaleEvent[]>([]);
 
   useEffect(() => {
     if (!address || !publicClient) return;
-    publicClient.getLogs({
-      address,
-      event: WHALE_VOTED_EVENT,
-      args: { proposalId: BigInt(proposalId) },
-      fromBlock: 0n,
-      toBlock: "latest",
-    }).then((logs) => setEvents(logs.map(mapVoteLog))).catch(console.error);
-  }, [address, publicClient, proposalId]);
+    let cancelled = false;
+
+    const fetchLogs = async () => {
+      try {
+        const latestBlock = await publicClient.getBlockNumber();
+        const startBlock = getDefaultTransferStartBlock(chainId);
+        const logs = [];
+
+        for (let fromBlock = startBlock; fromBlock <= latestBlock; fromBlock += 45_000n) {
+          const toBlock = fromBlock + 44_999n > latestBlock ? latestBlock : fromBlock + 44_999n;
+          const chunk = await publicClient.getLogs({
+            address,
+            event: WHALE_VOTED_EVENT,
+            args: { proposalId: BigInt(proposalId) },
+            fromBlock,
+            toBlock,
+          });
+          logs.push(...chunk);
+        }
+
+        if (!cancelled) {
+          setEvents(logs.map(mapVoteLog));
+        }
+      } catch (error) {
+        console.error(error);
+      }
+    };
+
+    void fetchLogs();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [address, publicClient, proposalId, chainId]);
 
   // Watch for new logs
   useWatchContractEvent({
@@ -233,7 +276,7 @@ export function useWhaleEvents(proposalId: number) {
         blockNumber: l.blockNumber ?? 0n,
         transactionHash: l.transactionHash ?? "0x" as `0x${string}`,
       }));
-      setEvents((prev) => {
+      setEvents((prev: WhaleEvent[]) => {
         const hashes = new Set(prev.map((e) => e.transactionHash));
         return [...prev, ...newEvents.filter((e) => !hashes.has(e.transactionHash))];
       });

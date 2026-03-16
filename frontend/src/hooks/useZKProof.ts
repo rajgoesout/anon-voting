@@ -5,9 +5,10 @@ import { usePublicClient, useChainId } from "wagmi";
 import { poseidonHash } from "@/lib/poseidon";
 import { generateGroth16Proof } from "@/lib/proof";
 import { buildSnapshotTree, reconstructBalances } from "@/lib/merkle";
-import { getContractAddresses, GOVERNANCE_TOKEN_ABI } from "@/lib/contracts";
+import { getContractAddresses } from "@/lib/contracts";
 import { initPoseidon, poseidonHashSync } from "@/lib/poseidon";
-import type { ProofInputs, ProofResult, ProofStep, Transfer } from "@/types";
+import { fetchTransferLogsChunked, getDefaultTransferStartBlock } from "@/lib/transfers";
+import type { ProofInputs, ProofResult, ProofStep } from "@/types";
 
 export function useZKProof() {
   const [step, setStep] = useState<ProofStep>("idle");
@@ -33,28 +34,16 @@ export function useZKProof() {
 
         // Step 1: Fetch all Transfer events up to the snapshot block
         const snapshotBlock = inputs.proposal.snapshotBlock;
+        const transferStartBlock = getDefaultTransferStartBlock(chainId);
 
-        const logs = await publicClient.getLogs({
-          address: tokenAddress,
-          event: {
-            type: "event",
-            name: "Transfer",
-            inputs: [
-              { name: "from", type: "address", indexed: true },
-              { name: "to", type: "address", indexed: true },
-              { name: "value", type: "uint256", indexed: false },
-            ],
+        const transfers = await fetchTransferLogsChunked(publicClient, tokenAddress, snapshotBlock, {
+          fromBlock: transferStartBlock,
+          onChunkStart: (fromBlock, toBlock) => {
+            setStep("snapshot");
+            setError(`Fetching transfer events ${fromBlock.toString()}-${toBlock.toString()}...`);
           },
-          fromBlock: 0n,
-          toBlock: snapshotBlock,
         });
-
-        const transfers: Transfer[] = logs.map((l) => ({
-          from: l.args.from as string,
-          to: l.args.to as string,
-          value: l.args.value as bigint,
-          blockNumber: l.blockNumber ?? 0n,
-        }));
+        setError(null);
 
         // Step 2: Build Merkle tree
         setStep("merkle");
@@ -101,9 +90,6 @@ export function useZKProof() {
           addressBigInt,
           proposalIdBigInt
         );
-
-        const nullifierHashHex = ("0x" +
-          nullifierHashBigInt.toString(16).padStart(64, "0")) as `0x${string}`;
 
         const merkleRootBigInt = BigInt(inputs.proposal.merkleRoot);
 

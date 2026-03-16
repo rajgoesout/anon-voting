@@ -1,6 +1,7 @@
 "use client";
 
 import { useWhaleEvents } from "@/hooks/useAnonymousVoting";
+import type { WhaleEvent } from "@/types";
 
 interface Props {
   proposalId: number;
@@ -16,9 +17,9 @@ export function WhaleActivity({ proposalId }: Props) {
   }
 
   return (
-    <div className="space-y-2">
+      <div className="space-y-2">
       <h3 className="text-sm font-semibold text-gray-600">Whale Activity</h3>
-      {events.map((e, i) => (
+      {events.map((e: WhaleEvent, i: number) => (
         <div
           key={i}
           className="flex items-center gap-3 rounded border border-blue-100 bg-blue-50 p-2 text-sm"

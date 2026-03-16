@@ -7,8 +7,8 @@ const ADDRESSES: Record<number, { anonymousVoting: `0x${string}`; governanceToke
   },
   11155111: {
     // Sepolia — fill after deployment
-    anonymousVoting: "0x0000000000000000000000000000000000000000",
-    governanceToken: "0x0000000000000000000000000000000000000000",
+    anonymousVoting: "0xbfAAc73EeBF173fC5374e52A001721D697C32fb5",
+    governanceToken: "0x91f535a47fa0871b4E0B10bf67e57db45F95600a",
   },
 };
 

@@ -1,9 +1,11 @@
 "use client";
 
 import { useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { useCreateProposal } from "@/hooks/useAnonymousVoting";
 import { getContractAddresses, GOVERNANCE_TOKEN_ABI } from "@/lib/contracts";
 import { buildSnapshotTree } from "@/lib/merkle";
+import { fetchTransferLogsChunked, getDefaultTransferStartBlock } from "@/lib/transfers";
 import { usePublicClient, useChainId } from "wagmi";
 
 export function CreateProposal() {
@@ -16,11 +18,13 @@ export function CreateProposal() {
     totalSupply: bigint;
   } | null>(null);
   const [computing, setComputing] = useState(false);
+  const [isConfirming, setIsConfirming] = useState(false);
   const [status, setStatus] = useState("");
 
   const { createProposal, isPending } = useCreateProposal();
   const publicClient = usePublicClient();
   const chainId = useChainId();
+  const queryClient = useQueryClient();
 
   const computeMerkleRoot = async () => {
     if (!publicClient) return;
@@ -38,6 +42,7 @@ export function CreateProposal() {
       }
 
       const snapshotBlock = await publicClient.getBlockNumber();
+      const transferStartBlock = getDefaultTransferStartBlock(chainId);
 
       setStatus(`Using snapshot block ${snapshotBlock.toString()}…`);
 
@@ -48,27 +53,12 @@ export function CreateProposal() {
         blockNumber: snapshotBlock,
       });
 
-      const logs = await publicClient.getLogs({
-        address: tokenAddress,
-        event: {
-          type: "event",
-          name: "Transfer",
-          inputs: [
-            { name: "from", type: "address", indexed: true },
-            { name: "to", type: "address", indexed: true },
-            { name: "value", type: "uint256", indexed: false },
-          ],
+      const transfers = await fetchTransferLogsChunked(publicClient, tokenAddress, snapshotBlock, {
+        fromBlock: transferStartBlock,
+        onChunkStart: (fromBlock, toBlock) => {
+          setStatus(`Fetching transfer events ${fromBlock.toString()}-${toBlock.toString()}...`);
         },
-        fromBlock: 0n,
-        toBlock: snapshotBlock,
       });
-
-      const transfers = logs.map((l) => ({
-        from: l.args.from as string,
-        to: l.args.to as string,
-        value: l.args.value as bigint,
-        blockNumber: l.blockNumber ?? 0n,
-      }));
 
       setStatus("Building Merkle tree…");
       const { root } = await buildSnapshotTree(transfers);
@@ -91,7 +81,7 @@ export function CreateProposal() {
     const duration = BigInt(Math.round(parseFloat(durationHours) * 60));
 
     try {
-      await createProposal(
+      const hash = await createProposal(
         description,
         snapshotData.merkleRoot,
         snapshotData.totalSupply,
@@ -99,11 +89,25 @@ export function CreateProposal() {
         snapshotData.snapshotBlock,
         duration
       );
+
+      if (!publicClient) {
+        throw new Error("No RPC client available");
+      }
+
+      setIsConfirming(true);
+      setStatus(`Transaction submitted: ${hash.slice(0, 10)}... Waiting for confirmation...`);
+
+      await publicClient.waitForTransactionReceipt({ hash, confirmations: 1 });
+
+      await queryClient.invalidateQueries();
+
       setDescription("");
       setSnapshotData(null);
-      setStatus("Proposal created!");
+      setStatus("Proposal created and confirmed onchain.");
     } catch (e) {
       setStatus(`Error: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setIsConfirming(false);
     }
   };
 
@@ -175,10 +179,10 @@ export function CreateProposal() {
 
       <button
         type="submit"
-        disabled={!snapshotData || !description || isPending}
+        disabled={!snapshotData || !description || isPending || isConfirming}
         className="w-full rounded-lg bg-indigo-600 py-2 text-white font-semibold hover:bg-indigo-700 disabled:opacity-50"
       >
-        {isPending ? "Creating…" : "Create Proposal"}
+        {isPending ? "Submitting…" : isConfirming ? "Waiting for confirmation…" : "Create Proposal"}
       </button>
     </form>
   );
