@@ -8,30 +8,30 @@ Privacy-preserving on-chain governance using Groth16 zero-knowledge proofs on Et
  Off-chain                          ZK Circuit                    On-chain
  ─────────                          ──────────                    ────────
   Transfer
-  events  ──→ Reconstruct  ──→  Merkle inclusion  ──→  AnonymousVoting.castVote()
+  events  ──→ Reconstruct   ──→  Merkle inclusion ──→  AnonymousVoting.castVote()
               balances           proof (private)         │
                                       │                  │  Verifier.verifyProof()
-              Poseidon leaf ──→  Nullifier hash    ──→   │  nullifierUsed[id][hash]
-              Poseidon hash       (public)                │
+              Poseidon leaf ──→  Nullifier hash   ──→    │  nullifierUsed[id][hash]
+              Poseidon hash       (public)               │
                                       │                  ├─ VoteCast event
-              Whale check   ──→  isWhale output    ──→   └─ WhaleVoted event (if whale)
+              Whale check   ──→  isWhale output   ──→    └─ WhaleVoted event (if whale)
               (balance ≥ bps%)   (constrained)
 ```
 
 ## Privacy Model
 
-| Signal | Visibility | Notes |
-|--------|-----------|-------|
-| Voter address | **Private** | Never sent on-chain |
-| Token balance | **Private** | Used only in circuit |
-| Vote direction | **Public** | FOR or AGAINST in event |
-| Nullifier hash | **Public** | Prevents double voting |
-| Is whale | **Public** | Binary — no balance revealed |
-| Whale direction | **Public** | WhaleVoted event if whale |
+| Signal          | Visibility  | Notes                        |
+| --------------- | ----------- | ---------------------------- |
+| Voter address   | **Private** | Never sent on-chain          |
+| Token balance   | **Private** | Used only in circuit         |
+| Vote direction  | **Public**  | FOR or AGAINST in event      |
+| Nullifier hash  | **Public**  | Prevents double voting       |
+| Is whale        | **Public**  | Binary — no balance revealed |
+| Whale direction | **Public**  | WhaleVoted event if whale    |
 
 **What stays private:** Your identity, your exact balance, your position among all holders.
 
-**What is public:** That *someone* voted, which direction the vote went, and whether a whale voted. The whale's identity remains hidden — only the direction is revealed.
+**What is public:** That _someone_ voted, which direction the vote went, and whether a whale voted. The whale's identity remains hidden — only the direction is revealed.
 
 **Nullifier scheme:** `nullifierHash = Poseidon(secret, voterAddress, proposalId)`. Your secret is never sent on-chain. The nullifier prevents double-voting without revealing who voted.
 
@@ -64,6 +64,7 @@ pnpm add -g snarkjs
 ```
 
 Verify:
+
 ```bash
 node --version       # ≥ 18
 forge --version
@@ -133,6 +134,7 @@ circom circuits/vote.circom --r1cs --wasm --sym -l ../node_modules -o circuits/b
 ```
 
 This produces:
+
 - `circuits/build/vote.r1cs` — the rank-1 constraint system
 - `circuits/build/vote_js/vote.wasm` — the witness generator (used by the frontend)
 - `circuits/build/vote.sym` — symbol file for debugging
@@ -280,11 +282,13 @@ anvil \
 ```
 
 Flags:
+
 - `--fork-block-number` — pins the fork to a specific block so results are reproducible. Pick a recent block number.
 - `--chain-id 31337` — anvil's default; MetaMask/RainbowKit will recognise it as "Localhost".
 - Remove `--fork-url` for a plain local chain (no real token history).
 
 Anvil prints 10 funded accounts with their private keys. The first one is the default deployer:
+
 ```
 Private Key: 0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80
 Address:     0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266
@@ -375,8 +379,8 @@ Edit `frontend/src/lib/contracts.ts` and fill in the addresses from the deployme
 ```typescript
 const ADDRESSES = {
   31337: {
-    anonymousVoting: "0x610178dA211FEF7D417bC0e6FeD39F05609AD788",  // ← your address
-    governanceToken: "0x8A791620dd6260079BF849Dc5567aDC3F2FdC318",  // ← your address
+    anonymousVoting: "0x610178dA211FEF7D417bC0e6FeD39F05609AD788", // ← your address
+    governanceToken: "0x8A791620dd6260079BF849Dc5567aDC3F2FdC318", // ← your address
   },
   // ...
 };
@@ -392,7 +396,7 @@ cp contracts/circuits/build/vote_js/vote.wasm frontend/public/circuits/vote.wasm
 cp contracts/circuits/build/vote_final.zkey   frontend/public/circuits/vote_final.zkey
 ```
 
-> If you skip this step, the frontend still runs but the "Generate Proof & Vote" button shows: *"Circuit files not found. Run the trusted setup first."*
+> If you skip this step, the frontend still runs but the "Generate Proof & Vote" button shows: _"Circuit files not found. Run the trusted setup first."_
 
 ### 4.3 Create a `.env.local` in `frontend/`
 
@@ -431,6 +435,70 @@ Opens at `http://localhost:3000`.
 
 ---
 
+## Part 4b — Sepolia Deployment
+
+### 4b.1 Set your RPC URL and deployer key
+
+Fill in your real Alchemy/Infura key and a wallet private key that has Sepolia ETH:
+
+```bash
+# contracts/.env
+SEPOLIA_RPC_URL=https://eth-sepolia.g.alchemy.com/v2/<YOUR_KEY>
+PRIVATE_KEY=0x<your_sepolia_deployer_private_key>
+```
+
+Get Sepolia ETH from [sepoliafaucet.com](https://sepoliafaucet.com).
+
+### 4b.2 Deploy to Sepolia
+
+```bash
+cd contracts
+source .env
+
+forge script script/Deploy.s.sol \
+  --rpc-url sepolia \
+  --private-key $PRIVATE_KEY \
+  --broadcast \
+  --verify \
+  -vvv
+```
+
+`--verify` submits source code to Etherscan automatically (requires `ETHERSCAN_API_KEY` in `.env` if you want verification). Leave it out if not needed.
+
+Note the three deployed addresses from the output.
+
+### 4b.3 Update frontend contract addresses
+
+Edit `frontend/src/lib/contracts.ts`:
+
+```typescript
+11155111: {
+  anonymousVoting: "0x<your_deployed_address>",
+  governanceToken: "0x<your_deployed_address>",
+},
+```
+
+### 4b.4 Update frontend RPC
+
+```bash
+# frontend/.env.local
+NEXT_PUBLIC_SEPOLIA_RPC_URL=https://eth-sepolia.g.alchemy.com/v2/<YOUR_KEY>
+```
+
+### 4b.5 Update relayer for Sepolia
+
+```bash
+# relayer/.env
+CHAIN_ID=11155111
+RPC_URL=https://eth-sepolia.g.alchemy.com/v2/<YOUR_KEY>
+CONTRACT_ADDRESS=0x<your_sepolia_anonymousvoting_address>
+RELAYER_PRIVATE_KEY=0x<a_funded_sepolia_wallet_private_key>
+```
+
+The relayer wallet needs Sepolia ETH to pay gas for `castVote` transactions.
+
+---
+
 ## Part 5 — Relayer (Voter Identity Privacy)
 
 Without the relayer, the voter's wallet submits the `castVote` transaction directly, making the voter's address (`from`) visible on-chain. The ZK proof hides the vote direction and balance, but the sender identity leaks.
@@ -446,6 +514,7 @@ cp relayer/.env.example relayer/.env
 ```
 
 The `.env.example` already contains the correct values for a local anvil setup:
+
 - `RELAYER_PRIVATE_KEY` — anvil account[1] (different from the deployer)
 - `CONTRACT_ADDRESS` — must match the deployed `AnonymousVoting` address
 - `PORT=3001`
@@ -468,6 +537,7 @@ pnpm dev
 ```
 
 Output:
+
 ```
 Relayer wallet: 0x70997970C51812dc3A010C7d01b50e0d17dc79C8
 ZK Vote Relayer running on http://localhost:3001
@@ -498,11 +568,13 @@ In the frontend, connect your wallet, fill in the "Create Proposal" form, click 
 ### Step 2 — Prepare proof inputs (browser)
 
 In the frontend, navigate to the proposal → `VotePanel`:
+
 1. Save the auto-generated **secret** (hex string) somewhere safe — you need it to prove your vote.
 2. Select **FOR** or **AGAINST**.
 3. Click **Generate Proof & Vote**.
 
 The browser:
+
 1. Queries Transfer events from the contract's `snapshotBlock` to reconstruct balances.
 2. Builds a Poseidon Merkle tree of all holders.
 3. Computes your Merkle path.
@@ -543,30 +615,30 @@ Or click **Finalize Proposal** in the frontend after advancing time.
 
 ## Deployment Summary
 
-| Step | Command | Directory |
-|------|---------|-----------|
-| Start anvil fork | `anvil --fork-url <RPC> --fork-block-number <N>` | any |
-| Deploy contracts | `forge script script/Deploy.s.sol --rpc-url localhost --broadcast` | `contracts/` |
-| Compile circuit | `circom circuits/vote.circom --r1cs --wasm --sym -l node_modules -o circuits/build/` | `contracts/` |
-| Trusted setup | see Part 2.3–2.5 | `contracts/` |
-| Copy artifacts | `cp circuits/build/vote_js/vote.wasm ../frontend/public/circuits/` | `contracts/` |
-| Update addresses | edit `frontend/src/lib/contracts.ts` | `frontend/` |
-| Start relayer | `pnpm relay:dev` | root |
-| Start frontend | `pnpm dev` | root |
+| Step             | Command                                                                              | Directory    |
+| ---------------- | ------------------------------------------------------------------------------------ | ------------ |
+| Start anvil fork | `anvil --fork-url <RPC> --fork-block-number <N>`                                     | any          |
+| Deploy contracts | `forge script script/Deploy.s.sol --rpc-url localhost --broadcast`                   | `contracts/` |
+| Compile circuit  | `circom circuits/vote.circom --r1cs --wasm --sym -l node_modules -o circuits/build/` | `contracts/` |
+| Trusted setup    | see Part 2.3–2.5                                                                     | `contracts/` |
+| Copy artifacts   | `cp circuits/build/vote_js/vote.wasm ../frontend/public/circuits/`                   | `contracts/` |
+| Update addresses | edit `frontend/src/lib/contracts.ts`                                                 | `frontend/`  |
+| Start relayer    | `pnpm relay:dev`                                                                     | root         |
+| Start frontend   | `pnpm dev`                                                                           | root         |
 
 ---
 
 ## Public Signals Layout
 
-| Index | Name | Visibility | Description |
-|-------|------|-----------|-------------|
-| 0 | `isWhale` | Public (output) | 1 if `balance × 10000 ≥ whaleThresholdBps × totalSupply` — outputs come first in snarkjs |
-| 1 | `merkleRoot` | Public | Poseidon root of (address, balance) snapshot tree |
-| 2 | `nullifierHash` | Public | `Poseidon(secret, voterAddress, proposalId)` |
-| 3 | `proposalId` | Public | Links proof to specific proposal |
-| 4 | `voteValue` | Public | 0 = Against, 1 = For |
-| 5 | `whaleThresholdBps` | Public | e.g., 1000 = 10% |
-| 6 | `totalSupply` | Public | Token supply at snapshot block |
+| Index | Name                | Visibility      | Description                                                                              |
+| ----- | ------------------- | --------------- | ---------------------------------------------------------------------------------------- |
+| 0     | `isWhale`           | Public (output) | 1 if `balance × 10000 ≥ whaleThresholdBps × totalSupply` — outputs come first in snarkjs |
+| 1     | `merkleRoot`        | Public          | Poseidon root of (address, balance) snapshot tree                                        |
+| 2     | `nullifierHash`     | Public          | `Poseidon(secret, voterAddress, proposalId)`                                             |
+| 3     | `proposalId`        | Public          | Links proof to specific proposal                                                         |
+| 4     | `voteValue`         | Public          | 0 = Against, 1 = For                                                                     |
+| 5     | `whaleThresholdBps` | Public          | e.g., 1000 = 10%                                                                         |
+| 6     | `totalSupply`       | Public          | Token supply at snapshot block                                                           |
 
 ---
 

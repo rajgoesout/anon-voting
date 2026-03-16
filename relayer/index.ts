@@ -1,9 +1,9 @@
 import "dotenv/config";
 import express from "express";
 import cors from "cors";
-import { createWalletClient, createPublicClient, http, parseAbi } from "viem";
+import { createWalletClient, createPublicClient, http, parseAbi, defineChain } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
-import { anvil } from "viem/chains";
+import { anvil, sepolia } from "viem/chains";
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
@@ -12,6 +12,7 @@ const RPC_URL = process.env.RPC_URL ?? "http://127.0.0.1:8545";
 const CORS_ORIGIN = process.env.CORS_ORIGIN ?? "http://localhost:3000";
 const CONTRACT_ADDRESS = process.env.CONTRACT_ADDRESS as `0x${string}`;
 const RELAYER_PRIVATE_KEY = process.env.RELAYER_PRIVATE_KEY as `0x${string}`;
+const CHAIN_ID = Number(process.env.CHAIN_ID ?? 31337);
 
 if (!CONTRACT_ADDRESS) throw new Error("CONTRACT_ADDRESS not set in .env");
 if (!RELAYER_PRIVATE_KEY) throw new Error("RELAYER_PRIVATE_KEY not set in .env");
@@ -22,10 +23,11 @@ const ABI = parseAbi([
 
 const account = privateKeyToAccount(RELAYER_PRIVATE_KEY);
 
-const chain = {
-  ...anvil,
+const BASE_CHAIN = CHAIN_ID === 11155111 ? sepolia : anvil;
+const chain = defineChain({
+  ...BASE_CHAIN,
   rpcUrls: { default: { http: [RPC_URL] } },
-};
+});
 
 const publicClient = createPublicClient({ chain, transport: http(RPC_URL) });
 const walletClient = createWalletClient({ account, chain, transport: http(RPC_URL) });
