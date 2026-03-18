@@ -57,14 +57,16 @@ export function useZKProof() {
 
         if (balance === 0n) {
           throw new Error(
-            "Your address has no token balance in the snapshot — you cannot vote on this proposal"
+            `This wallet did not hold governance tokens at the proposal snapshot block (${snapshotBlock.toString()}). It can only vote on proposals created after it received tokens.`
           );
         }
 
         // Get Merkle proof for this voter
         const idx = tree.addresses.indexOf(voterNorm);
         if (idx === -1) {
-          throw new Error("Your address is not in the snapshot Merkle tree");
+          throw new Error(
+            `This wallet was not included in the proposal snapshot at block ${snapshotBlock.toString()}, so it cannot vote on this proposal.`
+          );
         }
 
         const { MerkleTree } = await import("fixed-merkle-tree");
