@@ -8,5 +8,6 @@ artifacts/
 broadcast/
 circuits/build/
 *.zkey
+!frontend/public/circuits/vote_final.zkey
 *.ptau
 .DS_Store
