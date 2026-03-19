@@ -3,6 +3,8 @@
 import { useProposalCount, useProposal } from "@/hooks/useAnonymousVoting";
 import { ProposalCard } from "./ProposalCard";
 
+const HIDDEN_PROPOSAL_IDS = new Set([0, 1, 2, 3, 4, 5, 6, 7, 9]);
+
 function ProposalItem({ id }: { id: number }) {
   const { data: proposal, isLoading } = useProposal(id);
   if (isLoading) return <div className="h-24 rounded-lg bg-gray-100 animate-pulse" />;
@@ -35,8 +37,8 @@ export function ProposalList() {
 
   return (
     <div className="space-y-3">
-      {Array.from({ length: n }, (_, i) => (
-        <ProposalItem key={i} id={i} />
+      {Array.from({ length: n }, (_, i) => i).filter((id) => !HIDDEN_PROPOSAL_IDS.has(id)).map((id) => (
+        <ProposalItem key={id} id={id} />
       ))}
     </div>
   );
