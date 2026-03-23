@@ -1,833 +1,294 @@
-# ZK Anonymous Voting
+# Real-time DAO Governance Alerts with Kwala
 
-Privacy-preserving on-chain governance using Groth16 zero-knowledge proofs on Ethereum.
+> Automate anonymous vote notifications for DAO communities — no servers, no identity leaks, just YAML
 
-## Architecture
+DAOs run on participation, but tracking governance activity across on-chain contracts is tedious without dedicated infrastructure. In this guide, you'll build a real-time governance alert system using Kwala Workflows that listens for vote and whale activity on your `AnonymousVoting` contract and instantly pushes notifications to a Telegram channel — all without revealing voter identity.
 
-```
- Off-chain                          ZK Circuit                    On-chain
- ─────────                          ──────────                    ────────
-  Transfer
-  events  ──→ Reconstruct   ──→  Merkle inclusion ──→  AnonymousVoting.castVote()
-              balances           proof (private)         │
-                                      │                  │  Verifier.verifyProof()
-              Poseidon leaf ──→  Nullifier hash   ──→    │  nullifierUsed[id][hash]
-              Poseidon hash       (public)               │
-                                      │                  ├─ VoteCast event
-              Whale check   ──→  isWhale output   ──→    └─ WhaleVoted event (if whale)
-              (balance ≥ bps%)   (constrained)
-```
+With Kwala, you connect on-chain events to messaging APIs using simple YAML automation. No backend servers, no polling loops, no SDK overhead.
 
-## Privacy Model
+## Objective
 
-| Signal          | Visibility  | Notes                        |
-| --------------- | ----------- | ---------------------------- |
-| Voter address   | **Private** | Never sent on-chain          |
-| Token balance   | **Private** | Used only in circuit         |
-| Vote direction  | **Public**  | FOR or AGAINST in event      |
-| Nullifier hash  | **Public**  | Prevents double voting       |
-| Is whale        | **Public**  | Binary — no balance revealed |
-| Whale direction | **Public**  | WhaleVoted event if whale    |
+Build two linked workflows that:
 
-**What stays private:** Your identity, your exact balance, your position among all holders.
-
-**What is public:** That _someone_ voted, which direction the vote went, and whether a whale voted. The whale's identity remains hidden — only the direction is revealed.
-
-**Nullifier scheme:** `nullifierHash = Poseidon(secret, voterAddress, proposalId)`. Your secret is never sent on-chain. The nullifier prevents double-voting without revealing who voted.
-
-**Whale detection without doxing:** The circuit proves `balance × 10000 ≥ whaleThresholdBps × totalSupply` using a `GreaterEqThan(120)` comparator. Only the boolean result is a public output.
-
----
+* Listen for `VoteCast` and `WhaleVoted` events emitted by the `AnonymousVoting` smart contract on Sepolia.
+* Send real-time Telegram alerts to a DAO community channel whenever a vote is cast or a whale participates.
+* Surface governance activity publicly without leaking any voter identity — the ZK proof handles privacy, Kwala handles the notifications.
 
 ## Prerequisites
 
-Install these before anything else.
+Make sure you have:
 
-```bash
-# Node.js ≥ 18 (check with: node --version)
-# pnpm
-npm install -g pnpm
+* A MetaMask wallet connected to the Sepolia testnet and the Kwala network.
 
-# Foundry (forge, anvil, cast)
-curl -L https://foundry.paradigm.xyz | bash
-foundryup
+* A Telegram bot and channel set up via [@BotFather](https://t.me/BotFather).
+* Access to the [Kwala Dashboard](https://kwala.network/dashboard) to create workflows.
 
-# Rust (needed to build circom from source)
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-source "$HOME/.cargo/env"
+Optional (you can use the predeployed frontend and contracts for testing):
+* The contracts deployed on Sepolia (see the deployment guide in this repo).
+* The frontend setup with the ZK ceremony done (see the deployment guide in this repo).
+* The relayer setup (see the deployment guide in this repo).
 
-# circom 2.x
-cargo install --git https://github.com/iden3/circom
 
-# snarkjs
-pnpm add -g snarkjs
+## Step 1: Understand the contract events
+
+The `AnonymousVoting` contract emits two events relevant to this workflow:
+
+```solidity
+// Emitted on every valid vote
+event VoteCast(
+    uint256 indexed proposalId,
+    uint8 voteValue,       // 0 = Against, 1 = For
+);
+
+// Emitted only when the voter's balance exceeds the whale threshold
+event WhaleVoted(
+    uint256 indexed proposalId,
+    uint8 voteValue        // direction only — whale identity stays hidden
+);
 ```
 
-Verify:
+**Why this is safe to broadcast:** neither event contains a wallet address, balance, or any data that could identify the voter. The `nullifierHash` is a one-way hash of `Poseidon(secret, address, proposalId)` — it proves uniqueness without revealing who voted.
 
-```bash
-node --version       # ≥ 18
-forge --version
-circom --version     # ≥ 2.0
-snarkjs --version
-```
+Note your deployed contract address from the Sepolia deployment output. You'll need it in Step 3.
 
----
+## Step 2: Set up the Telegram bot
 
-## Part 1 — Contracts
+Before configuring the Kwala workflow, set up your Telegram bot:
 
-### 1.1 Install dependencies
+1. Open Telegram and search **@BotFather**.
+2. Run `/newbot` to create a new bot and receive a **bot token**.
+3. Add the bot to your DAO's community channel or group and make it an admin.
+4. Use [@userinfobot](https://t.me/userinfobot) to get your **chat ID** (for a group/channel it will be a negative number, e.g. `-1001234567890`).
 
-```bash
-# From repo root
-pnpm install
+Note both:
 
-# Foundry libraries (OpenZeppelin)
-cd contracts
-forge install
-cd ..
-```
+* **Bot token**, for example: `7754368882:AAHS4KbbOkl5rEHoBBIR8eljgwq2PARYLyY`
+* **Chat ID**, for example: `-1001234567890`
 
-### 1.2 Compile contracts
+> **Tip:** Test your bot token using ReqBin or Postman with a POST request to `https://api.telegram.org/bot<YOUR_TOKEN>/sendMessage` before wiring it into Kwala.
 
-```bash
-cd contracts
-forge build
-```
+## Step 3: Build Workflow 1 — Vote Cast Alerts
 
-Expected output: `Compiler run successful!` with no errors.
+This workflow fires on every valid anonymous vote and posts a message to your Telegram channel.
 
-### 1.3 Run unit tests (MockVerifier, no circuits needed)
+### Step 3.1: Create the workflow
 
-```bash
-cd contracts
-forge test -vvv
-```
+1. Go to your [Kwala Dashboard](https://kwala.network/dashboard).
+2. Select **Create New Workflow**.
+3. Name it `DAO_VoteCast_Notifier`.
 
-All 23 tests should pass. These use `MockVerifier` which always returns `true`, so no ZK proof is needed at this stage.
+### Step 3.2: Configure the trigger
 
----
+* **Execute After:** `event` — fires once the event is detected on-chain.
+* **Repeat Every:** `event` — re-triggers on every new `VoteCast`.
+* **Expires:** Set a timestamp beyond your proposal's voting window, for example `31-12-2025 23:59` UTC.
+* **Trigger Chain ID:** `11155111` (Ethereum Sepolia).
+* **Source Contract Address:** your deployed `AnonymousVoting` address, for example `0xYourContractAddress`.
+* **Recurring Event Name:** `VoteCast(uint256,uint8,bool,bytes32)`
+* **Event Filter:** `NA`
+* **Smart contract (optional):** paste the `AnonymousVoting.sol` source or upload the file — Kwala will extract the ABI automatically.
 
-## Part 2 — Circuit
+### Step 3.3: Configure the action
 
-> The circuit must be compiled and the trusted setup run **before** the frontend can generate real proofs, and before the real `Verifier.sol` can be generated.
+* **Action Name:** `telegram_vote_alert`
+* **Action Type:** `POST API CALL`
+* **API Endpoint:** `https://api.telegram.org/bot<YOUR_BOT_TOKEN>/sendMessage`
+* **API Payload:**
 
-### 2.1 Install circomlib
-
-The circuit imports circomlib. Install it inside `contracts/`:
-
-```bash
-cd contracts
-npm init -y          # creates a package.json if not present
-npm install circomlibjs circomlib
-```
-
-> circomlib is a Node package that ships the `.circom` source files. The `--include` path circom uses is `node_modules/circomlib/circuits/`.
-
-### 2.2 Compile the circuit
-
-```bash
-cd contracts
-mkdir -p circuits/build
-
-circom circuits/vote.circom --r1cs --wasm --sym -l ../node_modules -o circuits/build/
-```
-
-This produces:
-
-- `circuits/build/vote.r1cs` — the rank-1 constraint system
-- `circuits/build/vote_js/vote.wasm` — the witness generator (used by the frontend)
-- `circuits/build/vote.sym` — symbol file for debugging
-
-> The circuit has ~12k constraints (Merkle depth 20 × Poseidon). Compilation takes 1–3 minutes.
-
-### 2.3 Trusted setup — Phase 1 (Powers of Tau)
-
-The circuit has ~12k constraints, so you need a ptau file supporting at least 2^15 = 32,768 constraints.
-
-**Option A — Download Hermez ceremony file (recommended, ~100 MB):**
-
-```bash
-cd contracts/circuits/build
-
-curl -O https://hermez.s3-eu-west-1.amazonaws.com/powersOfTau28_hez_final_15.ptau
-```
-
-This file already has hundreds of contributors and is production-grade. Skip to step 2.4 after this.
-
-**Option B — Generate your own (development only, ~5 min):**
-
-```bash
-cd contracts
-
-# Generate initial ptau — power 15 supports up to 2^15 = 32,768 constraints
-snarkjs powersoftau new bn128 15 circuits/build/pot15_0000.ptau -v
-
-# Contribute randomness (type any random text when prompted)
-snarkjs powersoftau contribute \
-  circuits/build/pot15_0000.ptau \
-  circuits/build/pot15_0001.ptau \
-  --name="local-dev" -v
-
-# Prepare for phase 2
-snarkjs powersoftau prepare phase2 \
-  circuits/build/pot15_0001.ptau \
-  circuits/build/powersOfTau28_hez_final_15.ptau -v
-```
-
-### 2.4 Trusted setup — Phase 2 (circuit-specific)
-
-```bash
-cd contracts
-
-# Groth16 setup — binds the ptau to the circuit
-snarkjs groth16 setup \
-  circuits/build/vote.r1cs \
-  circuits/build/powersOfTau28_hez_final_15.ptau \
-  circuits/build/vote_0000.zkey
-
-# Add your contribution (type random text when prompted)
-snarkjs zkey contribute \
-  circuits/build/vote_0000.zkey \
-  circuits/build/vote_final.zkey \
-  --name="local-dev" -v
-```
-
-### 2.5 Export the verification key and Solidity verifier
-
-```bash
-cd contracts
-
-# Export JSON verification key (used by snarkjs to verify proofs off-chain)
-snarkjs zkey export verificationkey \
-  circuits/build/vote_final.zkey \
-  circuits/build/verification_key.json
-
-# Generate the real Verifier.sol — this REPLACES the stub
-snarkjs zkey export solidityverifier \
-  circuits/build/vote_final.zkey \
-  src/Verifier.sol
-```
-
-After this step, `src/Verifier.sol` contains the real Groth16 verifier contract. Recompile:
-
-```bash
-cd contracts
-forge build
-```
-
-### 2.6 Verify a test proof (optional sanity check)
-
-```bash
-cd contracts
-
-# Generate a dummy input file
-cat > circuits/build/input.json << 'EOF'
+```json
 {
-  "secret": "1234567890",
-  "voterAddress": "123456789",
-  "balance": "1000000000000000000000",
-  "pathElements": ["0","0","0","0","0","0","0","0","0","0","0","0","0","0","0","0","0","0","0","0"],
-  "pathIndices":  ["0","0","0","0","0","0","0","0","0","0","0","0","0","0","0","0","0","0","0","0"],
-  "merkleRoot": "0",
-  "nullifierHash": "0",
-  "proposalId": "0",
-  "voteValue": "1",
-  "whaleThresholdBps": "1000",
-  "totalSupply": "1000000000000000000000000"
+  "chat_id": "-1001234567890",
+  "text": "🗳️ New anonymous vote cast re.event(1) on Proposal re.event(0)\nVoter identity is private.",
 }
-EOF
-
-# Generate witness
-node circuits/build/vote_js/generate_witness.js \
-  circuits/build/vote_js/vote.wasm \
-  circuits/build/input.json \
-  circuits/build/witness.wtns
-
-# Generate proof
-snarkjs groth16 prove \
-  circuits/build/vote_final.zkey \
-  circuits/build/witness.wtns \
-  circuits/build/proof.json \
-  circuits/build/public.json
-
-# Verify proof locally
-snarkjs groth16 verify \
-  circuits/build/verification_key.json \
-  circuits/build/public.json \
-  circuits/build/proof.json
 ```
 
-Expected: `OK!`
+* **Retries Until Success:** `5`
+* **Execution Mode:** `Sequential`
 
-> Note: the dummy input above will fail the nullifier constraint (nullifierHash won't match). Use correct computed values when testing end-to-end.
+## YAML configuration — Workflow 1
 
----
-
-## Part 3 — Local Deployment (Anvil Mainnet Fork)
-
-Using a mainnet fork lets you interact with real ERC-20 token holders and Transfer event history without deploying to mainnet.
-
-### 3.1 Start anvil with a mainnet fork
-
-You need an RPC URL. Get a free one from Alchemy or Infura.
-
-```bash
-# In a dedicated terminal — keep it running
-anvil \
-  --fork-url https://eth-mainnet.g.alchemy.com/v2/<YOUR_ALCHEMY_KEY> \
-  --fork-block-number 21000000 \
-  --chain-id 31337 \
-  --port 8545
+```yaml
+Name: DAO_VoteCast_Notifier
+Trigger:
+  TriggerSourceContract: 0xYourAnonymousVotingContractAddress
+  TriggerChainID: 11155111
+  TriggerEventName: VoteCast(uint256,uint8,bool,bytes32)
+  TriggerEventFilter: NA
+  TriggerSourceContractABI: <base64-encoded ABI from Kwala dashboard>
+  TriggerPrice: NA
+  RecurringSourceContract: 0xYourAnonymousVotingContractAddress
+  RecurringChainID: 11155111
+  RecurringEventName: VoteCast(uint256,uint8,bool,bytes32)
+  RecurringEventFilter: NA
+  RecurringSourceContractABI: <base64-encoded ABI from Kwala dashboard>
+  RecurringPrice: NA
+  RepeatEvery: event
+  ExecuteAfter: event
+  ExpiresIn: 1767225599
+  Meta: NA
+  ActionStatusNotificationPOSTURL:
+  ActionStatusNotificationAPIKey: NA
+Actions:
+  - Name: telegram_vote_alert
+    Type: post
+    APIEndpoint: https://api.telegram.org/bot<YOUR_BOT_TOKEN>/sendMessage
+    APIPayload:
+      chat_id: '-1001234567890'
+      text: "🗳️ New anonymous vote cast re.event(1) on Proposal re.event(0)\nVoter identity is private."
+    TargetContract: NA
+    TargetFunction: NA
+    TargetParams:
+    ChainID: NA
+    EncodedABI: NA
+    Bytecode: NA
+    EncodedGoContract: NA
+    Metadata: NA
+    RetriesUntilSuccess: 5
+Execution:
+  Mode: sequential
 ```
 
-Flags:
+> **Note:** The ABI field will be auto-populated by Kwala when you paste or upload the Solidity source in the dashboard. Copy the base64 value it generates.
 
-- `--fork-block-number` — pins the fork to a specific block so results are reproducible. Pick a recent block number.
-- `--chain-id 31337` — anvil's default; MetaMask/RainbowKit will recognise it as "Localhost".
-- Remove `--fork-url` for a plain local chain (no real token history).
+## Step 4: Build Workflow 2 — Whale Vote Alerts
 
-Anvil prints 10 funded accounts with their private keys. The first one is the default deployer:
+This workflow fires only when a whale participates, giving your community an additional signal for high-stakes votes.
 
-```
-Private Key: 0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80
-Address:     0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266
-```
+### Step 4.1: Create the workflow
 
-### 3.2 Create a `.env` file in `contracts/`
+1. In the Kwala Dashboard, select **Create New Workflow**.
+2. Name it `DAO_WhaleVoted_Notifier`.
 
-```bash
-cat > contracts/.env << 'EOF'
-PRIVATE_KEY=0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80
-MAINNET_RPC_URL=https://eth-mainnet.g.alchemy.com/v2/<YOUR_ALCHEMY_KEY>
-EOF
-```
+### Step 4.2: Configure the trigger
 
-### 3.3 Deploy contracts
+* **Execute After:** `event`
+* **Repeat Every:** `event`
+* **Expires:** same expiry as Workflow 1
+* **Trigger Chain ID:** `11155111`
+* **Source Contract Address:** same `AnonymousVoting` address
+* **Recurring Event Name:** `WhaleVoted(uint256,uint8)`
+* **Event Filter:** `NA`
 
-```bash
-cd contracts
-source .env
+### Step 4.3: Configure the action
 
-forge script script/Deploy.s.sol \
-  --rpc-url http://127.0.0.1:8545 \
-  --private-key $PRIVATE_KEY \
-  --broadcast \
-  -vvv
-```
+* **Action Name:** `telegram_whale_alert`
+* **Action Type:** `POST API CALL`
+* **API Endpoint:** `https://api.telegram.org/bot<YOUR_BOT_TOKEN>/sendMessage`
+* **API Payload:**
 
-The script deploys in order: `Groth16Verifier` → `GovernanceToken` → `AnonymousVoting`. It prints all three addresses:
-
-```
-Groth16Verifier deployed at: 0x5FbDB2315678afecb367f032d93F642f64180aa3
-GovernanceToken deployed at: 0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512
-AnonymousVoting deployed at: 0x9fE46736679d2D9a65F0992F2272dE9f3c7fa6e0
+```json
+{
+  "chat_id": "-1001234567890",
+  "text": "🐋 A whale just voted re.event(1) on Proposal re.event(0)\nWhale identity remains private — only the direction is revealed."
+}
 ```
 
-Save these — you need them in the next step.
+* **Retries Until Success:** `5`
+* **Execution Mode:** `Sequential`
 
-### 3.4 Run integration tests against the fork
+## YAML configuration — Workflow 2
 
-```bash
-cd contracts
-
-# Run all tests against the forked chain
-forge test \
-  --fork-url http://127.0.0.1:8545 \
-  -vvv
+```yaml
+Name: DAO_WhaleVoted_Notifier
+Trigger:
+  TriggerSourceContract: 0xYourAnonymousVotingContractAddress
+  TriggerChainID: 11155111
+  TriggerEventName: WhaleVoted(uint256,uint8)
+  TriggerEventFilter: NA
+  TriggerSourceContractABI: <base64-encoded ABI from Kwala dashboard>
+  TriggerPrice: NA
+  RecurringSourceContract: 0xYourAnonymousVotingContractAddress
+  RecurringChainID: 11155111
+  RecurringEventName: WhaleVoted(uint256,uint8)
+  RecurringEventFilter: NA
+  RecurringSourceContractABI: <base64-encoded ABI from Kwala dashboard>
+  RecurringPrice: NA
+  RepeatEvery: event
+  ExecuteAfter: event
+  ExpiresIn: 1767225599
+  Meta: NA
+  ActionStatusNotificationPOSTURL:
+  ActionStatusNotificationAPIKey: NA
+Actions:
+  - Name: telegram_whale_alert
+    Type: post
+    APIEndpoint: https://api.telegram.org/bot<YOUR_BOT_TOKEN>/sendMessage
+    APIPayload:
+      chat_id: '-1001234567890'
+      text: "🐋 A whale just voted re.event(1) on Proposal re.event(0)\nWhale identity remains private — only the direction is revealed."
+    TargetContract: NA
+    TargetFunction: NA
+    TargetParams:
+    ChainID: NA
+    EncodedABI: NA
+    Bytecode: NA
+    EncodedGoContract: NA
+    Metadata: NA
+    RetriesUntilSuccess: 5
+Execution:
+  Mode: sequential
 ```
 
-This runs the same 23 unit tests but against the live forked state. The tests themselves still use `MockVerifier`, so ZK proofs are bypassed inside the test harness even though the default deploy script now uses the real `Groth16Verifier`.
+## Step 5: Deploy and test
 
-### 3.5 Manual cast commands (optional)
+1. In the Kwala Dashboard, save and compile each YAML workflow.
+2. Deploy both workflows — you'll receive a Kwala workflow address for each.
+3. Wait for the status of each workflow to show **claimed**, and then click **"Activate"**.
 
-Use `cast` to interact with deployed contracts directly:
+> **Important:** Switch MetaMask to the **Kwala network** when deploying workflows. Switch back to **Sepolia** when interacting with the `AnonymousVoting` contract (via the frontend).
 
-```bash
-# Check proposal count
-cast call <ANONYMOUS_VOTING_ADDR> "proposalCount()(uint256)" \
-  --rpc-url http://127.0.0.1:8545
+> **You must hold Governance tokens to be able to cast a vote before a proposal is created**. Make sure you mint ZKGOV tokens using the `GovernanceToken` contract to your voter wallet(s) before creating a proposal.
 
-# Check ZKGOV balance of deployer
-cast call <GOVERNANCE_TOKEN_ADDR> \
-  "balanceOf(address)(uint256)" \
-  0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266 \
-  --rpc-url http://127.0.0.1:8545
+To trigger a test notification:
 
-# Create a test proposal (bytes32 merkleRoot as 0x000...001)
-cast send <ANONYMOUS_VOTING_ADDR> \
-  "createProposal(string,bytes32,uint256,uint256,uint256,uint256)" \
-  "Test proposal" \
-  "0x0000000000000000000000000000000000000000000000000000000000000001" \
-  "1000000000000000000000000" \
-  "1000" \
-  "<SNAPSHOT_BLOCK>" \
-  "604800" \
-  --rpc-url http://127.0.0.1:8545 \
-  --private-key $PRIVATE_KEY
-```
+1. Open your frontend at `http://localhost:3000` (or the deployed URL).
+2. Connect a wallet that holds governance tokens.
+3. Navigate to an active proposal and cast a vote using **Generate Proof & Vote**.
+4. Within seconds, your Telegram channel should receive the vote alert.
 
----
+If you want to trigger a whale alert specifically, cast a vote from a wallet whose balance meets or exceeds the `whaleThresholdBps` set on the proposal.
 
-## Part 4 — Frontend
+## Step 6: Monitor workflow execution
 
-### 4.1 Update contract addresses
+In the **Kwala Dashboard**, navigate to your deployed workflows and check:
 
-Edit `frontend/src/lib/contracts.ts` and fill in the addresses from the deployment output:
+* **Workflow Logs** — see each `VoteCast` or `WhaleVoted` event detected and the corresponding Telegram API call.
+* **Execution Status** — confirm each notification was delivered successfully.
+* **Retries and Failures** — debug any failed Telegram requests (typically a bad token or expired bot session).
 
-```typescript
-const ADDRESSES = {
-  31337: {
-    anonymousVoting: "0x610178dA211FEF7D417bC0e6FeD39F05609AD788", // ← your address
-    governanceToken: "0x8A791620dd6260079BF849Dc5567aDC3F2FdC318", // ← your address
-  },
-  // ...
-};
-```
-
-### 4.2 Copy circuit files
-
-After completing Part 2:
-
-```bash
-mkdir -p frontend/public/circuits
-cp contracts/circuits/build/vote_js/vote.wasm frontend/public/circuits/vote.wasm
-cp contracts/circuits/build/vote_final.zkey   frontend/public/circuits/vote_final.zkey
-```
-
-> If you skip this step, the frontend still runs but the "Generate Proof & Vote" button shows: _"Circuit files not found. Run the trusted setup first."_
-
-### 4.3 Create a `.env.local` in `frontend/`
-
-```bash
-cat > frontend/.env.local << 'EOF'
-NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID=your_project_id_from_walletconnect_cloud
-NEXT_PUBLIC_MAINNET_RPC_URL=https://eth-mainnet.g.alchemy.com/v2/<YOUR_KEY>
-NEXT_PUBLIC_SEPOLIA_RPC_URL=https://eth-sepolia.g.alchemy.com/v2/<YOUR_KEY>
-EOF
-```
-
-`NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID` is required by RainbowKit. Get a free one at [cloud.walletconnect.com](https://cloud.walletconnect.com). Without it, wallet connection still works in dev mode with a warning.
-
-### 4.4 Start the frontend
-
-```bash
-# From repo root
-pnpm dev
-
-# Or directly
-cd frontend
-pnpm dev
-```
-
-Opens at `http://localhost:3000`.
-
-### 4.5 Connect MetaMask to local anvil
-
-1. Open MetaMask → Settings → Networks → Add Network:
-   - Network name: `Anvil Local`
-   - RPC URL: `http://127.0.0.1:8545`
-   - Chain ID: `31337`
-   - Currency symbol: `ETH`
-2. Import a test account: In MetaMask → Import Account → paste one of anvil's private keys (e.g. `0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80`)
-3. The account will have 10000 ETH (anvil default) and 1,000,000 ZKGOV (minted on deploy).
-
----
-
-## Part 4b — Sepolia Deployment
-
-### 4b.1 Set your RPC URL and deployer key
-
-Fill in your real Alchemy/Infura key and a wallet private key that has Sepolia ETH:
-
-```bash
-# contracts/.env
-SEPOLIA_RPC_URL=https://eth-sepolia.g.alchemy.com/v2/<YOUR_KEY>
-PRIVATE_KEY=0x<your_sepolia_deployer_private_key>
-```
-
-Get Sepolia ETH from [sepoliafaucet.com](https://sepoliafaucet.com).
-
-### 4b.2 Deploy to Sepolia
-
-```bash
-cd contracts
-source .env
-
-forge script script/Deploy.s.sol \
-  --rpc-url sepolia \
-  --private-key $PRIVATE_KEY \
-  --broadcast \
-  --verify \
-  -vvv
-```
-
-`--verify` submits source code to Etherscan automatically (requires `ETHERSCAN_API_KEY` in `.env` if you want verification). Leave it out if not needed.
-
-Note the three deployed addresses from the output.
-
-### 4b.3 Update frontend contract addresses
-
-Edit `frontend/src/lib/contracts.ts`:
-
-```typescript
-11155111: {
-  anonymousVoting: "0x<your_deployed_address>",
-  governanceToken: "0x<your_deployed_address>",
-},
-```
-
-### 4b.4 Update frontend RPC
-
-```bash
-# frontend/.env.local
-NEXT_PUBLIC_SEPOLIA_RPC_URL=https://eth-sepolia.g.alchemy.com/v2/<YOUR_KEY>
-```
-
-### 4b.5 Update relayer for Sepolia
-
-```bash
-# relayer/.env
-CHAIN_ID=11155111
-RPC_URL=https://eth-sepolia.g.alchemy.com/v2/<YOUR_KEY>
-CONTRACT_ADDRESS=0x<your_sepolia_anonymousvoting_address>
-RELAYER_PRIVATE_KEY=0x<a_funded_sepolia_wallet_private_key>
-```
-
-The relayer wallet needs Sepolia ETH to pay gas for `castVote` transactions.
-
----
-
-## Part 5 — Relayer (Voter Identity Privacy)
-
-Without the relayer, the voter's wallet submits the `castVote` transaction directly, making the voter's address (`from`) visible on-chain. The ZK proof hides the vote direction and balance, but the sender identity leaks.
-
-The relayer solves this: the voter's browser generates the proof, then POSTs it to a local relayer server. The relayer submits the transaction from **its own address** — the voter's address never appears on-chain.
-
-> The contract does not use `msg.sender` in `castVote`, so this requires no contract changes.
-
-### 5.1 Create the relayer `.env`
-
-```bash
-cp relayer/.env.example relayer/.env
-```
-
-The `.env.example` already contains the correct values for a local anvil setup:
-
-- `RELAYER_PRIVATE_KEY` — anvil account[1] (different from the deployer)
-- `CONTRACT_ADDRESS` — must match the deployed `AnonymousVoting` address
-- `PORT=3001`
-- `CORS_ORIGIN=http://localhost:3000`
-
-Update `CONTRACT_ADDRESS` if you redeployed.
-
-### 5.2 Start the relayer
-
-```bash
-# In a dedicated terminal
-pnpm relay:dev
-```
-
-Or directly:
-
-```bash
-cd relayer
-pnpm dev
-```
-
-Output:
+## How it works end-to-end
 
 ```
-Relayer wallet: 0x70997970C51812dc3A010C7d01b50e0d17dc79C8
-ZK Vote Relayer running on http://localhost:3001
-  Contract : 0x610178dA211FEF7D417bC0e6FeD39F05609AD788
-  RPC      : http://127.0.0.1:8545
-  CORS     : http://localhost:3000
+Voter browser          AnonymousVoting.sol         Kwala nodes            Telegram
+─────────────          ───────────────────         ───────────            ────────
+Generate ZK proof  ──► castVote()             ──►  Detect VoteCast  ──►  POST /sendMessage
+                        │                           event on Sepolia       │
+                        ├─ emit VoteCast(...)  ──►  Execute action    ──►  "New vote on Proposal #0"
+                        └─ emit WhaleVoted(...)──►  (if whale)        ──►  "A whale just voted"
 ```
 
-### 5.3 Health check
+The voter's wallet address never appears in either event. The ZK circuit proves eligibility and whale status; Kwala simply reacts to the public outputs.
 
-```bash
-curl http://localhost:3001/health
-# {"status":"ok","relayer":"0x70997970...","balanceEth":"10000.0000","contract":"0x6101..."}
-```
+## Privacy model reminder
 
-The relayer needs ETH to pay gas. The default anvil account[1] has 10,000 ETH, so this is not a concern for local dev.
+| Data point        | Visible in alert? | Notes                                      |
+| ----------------- | ----------------- | ------------------------------------------ |
+| Voter address     | No                | Never emitted on-chain                     |
+| Token balance     | No                | Proven inside the ZK circuit only          |
+| Vote direction    | Yes               | Public output of the ZK proof              |
+| Whale status      | Yes (boolean)     | True/false only — no balance revealed      |
+| Nullifier hash    | Yes               | Proves uniqueness, not linkable to a wallet |
+| Proposal ID       | Yes               | Identifies which proposal was voted on     |
 
----
+## Conclusion
 
-## Part 6 — Full End-to-End Flow
+In this guide, you built a real-time DAO governance notification system using Kwala Workflows — no servers, no polling infrastructure, no voter identity exposure. Every anonymous vote triggers an instant Telegram alert to your community, and whale participation gets its own dedicated notification.
 
-This section describes the complete sequence from contract deployment to casting an anonymous vote.
+This pattern extends naturally to other governance signals: proposal creation, proposal finalization, or even treasury movements. Swap the event name and payload in the YAML, and Kwala handles the rest.
 
-### Step 1 — Create a proposal (frontend or cast)
+## Next steps
 
-In the frontend, connect your wallet, fill in the "Create Proposal" form, click **Compute Snapshot Merkle Root**, then submit. The frontend first locks a specific `snapshotBlock`, then computes the Merkle root and reads `totalSupply` for that exact block before calling `createProposal`.
-
-### Step 2 — Prepare proof inputs (browser)
-
-In the frontend, navigate to the proposal → `VotePanel`:
-
-1. Save the auto-generated **secret** (hex string) somewhere safe — you need it to prove your vote.
-2. Select **FOR** or **AGAINST**.
-3. Click **Generate Proof & Vote**.
-
-The browser:
-
-1. Queries Transfer events from block `0` up to the proposal's `snapshotBlock` to reconstruct balances.
-2. Builds a Poseidon Merkle tree of all holders.
-3. Computes your Merkle path.
-4. Computes `nullifierHash = Poseidon(secret, address, proposalId)`.
-5. Calls `snarkjs.groth16.fullProve()` with `vote.wasm` + `vote_final.zkey`.
-6. Formats `a, b, c` proof arrays for Solidity calldata.
-7. POSTs `{proposalId, nullifierHash, voteValue, isWhale, a, b, c}` to the relayer at `http://localhost:3001/relay`.
-8. The relayer submits `AnonymousVoting.castVote()` from its own wallet — the voter's address never appears on-chain.
-
-> Proof generation takes 5–30 seconds in the browser depending on hardware.
-
-### Step 3 — Verify the vote landed
-
-```bash
-# Check vote counts
-cast call <ANONYMOUS_VOTING_ADDR> \
-  "getVoteCounts(uint256)(uint256,uint256,uint256,uint256)" 0 \
-  --rpc-url http://127.0.0.1:8545
-```
-
-### Step 4 — Finalize (after deadline)
-
-```bash
-# Fast-forward time past the proposal deadline
-cast rpc anvil_increaseTime 604801 --rpc-url http://127.0.0.1:8545
-cast rpc anvil_mine --rpc-url http://127.0.0.1:8545
-
-# Finalize
-cast send <ANONYMOUS_VOTING_ADDR> \
-  "finalizeProposal(uint256)" 0 \
-  --rpc-url http://127.0.0.1:8545 \
-  --private-key $PRIVATE_KEY
-```
-
-Or click **Finalize Proposal** in the frontend after advancing time.
-
----
-
-## Deployment Summary
-
-| Step             | Command                                                                              | Directory    |
-| ---------------- | ------------------------------------------------------------------------------------ | ------------ |
-| Start anvil fork | `anvil --fork-url <RPC> --fork-block-number <N>`                                     | any          |
-| Deploy contracts | `forge script script/Deploy.s.sol --rpc-url localhost --broadcast`                   | `contracts/` |
-| Compile circuit  | `circom circuits/vote.circom --r1cs --wasm --sym -l node_modules -o circuits/build/` | `contracts/` |
-| Trusted setup    | see Part 2.3–2.5                                                                     | `contracts/` |
-| Copy artifacts   | `cp circuits/build/vote_js/vote.wasm ../frontend/public/circuits/`                   | `contracts/` |
-| Update addresses | edit `frontend/src/lib/contracts.ts`                                                 | `frontend/`  |
-| Start relayer    | `pnpm relay:dev`                                                                     | root         |
-| Start frontend   | `pnpm dev`                                                                           | root         |
-
----
-
-## Public Signals Layout
-
-| Index | Name                | Visibility      | Description                                                                              |
-| ----- | ------------------- | --------------- | ---------------------------------------------------------------------------------------- |
-| 0     | `isWhale`           | Public (output) | 1 if `balance × 10000 ≥ whaleThresholdBps × totalSupply` — outputs come first in snarkjs |
-| 1     | `merkleRoot`        | Public          | Poseidon root of (address, balance) snapshot tree                                        |
-| 2     | `nullifierHash`     | Public          | `Poseidon(secret, voterAddress, proposalId)`                                             |
-| 3     | `proposalId`        | Public          | Links proof to specific proposal                                                         |
-| 4     | `voteValue`         | Public          | 0 = Against, 1 = For                                                                     |
-| 5     | `whaleThresholdBps` | Public          | e.g., 1000 = 10%                                                                         |
-| 6     | `totalSupply`       | Public          | Token supply at snapshot block                                                           |
-
----
-
-## Calling `verifyProof` Exactly
-
-Two separate calls matter here:
-
-1. `Groth16Verifier.verifyProof(a, b, c, publicSignals)` checks whether the proof is valid.
-2. `AnonymousVoting.castVote(proposalId, nullifierHash, voteValue, isWhale, a, b, c)` is the real voting entrypoint and internally rebuilds `publicSignals` before calling `verifyProof`.
-
-Important correction: a non-whale voter does **not** produce an invalid proof. They produce a **valid** proof whose public output is `isWhale = 0`. Whale voters produce a **valid** proof whose public output is `isWhale = 1`.
-
-### What goes into `verifyProof`
-
-The verifier signature is:
-
-```solidity
-function verifyProof(
-    uint256[2] calldata a,
-    uint256[2][2] calldata b,
-    uint256[2] calldata c,
-    uint256[7] calldata publicSignals
-) external view returns (bool);
-```
-
-Map your `snarkjs` output like this:
-
-```text
-proof.pi_a -> a = [pi_a[0], pi_a[1]]
-proof.pi_b -> b = [[pi_b[0][1], pi_b[0][0]], [pi_b[1][1], pi_b[1][0]]]
-proof.pi_c -> c = [pi_c[0], pi_c[1]]
-public.json -> publicSignals exactly as emitted by snarkjs
-```
-
-The `b` array must be reordered exactly as above. This repo already does that in [proof.ts](/Users/raj/dev/kwala/anon-voting/frontend/src/lib/proof.ts).
-
-### `publicSignals` order
-
-Use this exact order:
-
-```text
-publicSignals[0] = isWhale
-publicSignals[1] = merkleRoot
-publicSignals[2] = nullifierHash
-publicSignals[3] = proposalId
-publicSignals[4] = voteValue
-publicSignals[5] = whaleThresholdBps
-publicSignals[6] = totalSupply
-```
-
-That order is enforced in [AnonymousVoting.sol](/Users/raj/dev/kwala/anon-voting/contracts/src/AnonymousVoting.sol) and must match the circuit output order.
-
-### Direct verifier call with the checked-in sample proof
-
-Using the current checked-in files:
-
-- [proof.json](/Users/raj/dev/kwala/anon-voting/contracts/circuits/build/proof.json)
-- [public.json](/Users/raj/dev/kwala/anon-voting/contracts/circuits/build/public.json)
-
-the exact Solidity arguments are:
-
-```text
-a = [
-  12472914312737636811347307842788773051755724196037724470762126623208329082845,
-  17125918841847538001226743052918113981393070774074937215351343065710279190174
-]
-
-b = [
-  [
-    13316199290824921864388843935043170811490389689599903694377958113728821724487,
-    3207690585627279667222546444779204611953991254198462100130332970012255959027
-  ],
-  [
-    16597733531601378053991249421353005495822086083367379157580643714684518625125,
-    13888535118599279860106084626949534552065350070663188342813458864670672409178
-  ]
-]
-
-c = [
-  6591375277283859117440711145694368604568770498840688111316720518401833356876,
-  8913562152110469152972974287011025948548824595144754495568345277540103002976
-]
-
-publicSignals = [
-  0,
-  9422168850547513324964282358817941077575013683908892985936811464479841607707,
-  7982188534737865902703884740975986036599116980257042523917003927210349271917,
-  0,
-  1,
-  1000,
-  1000000000000000000000000
-]
-```
-
-If your verifier is deployed at `0xVerifier`, call it with `cast` like this:
-
-```bash
-cast call 0xVerifier \
-  "verifyProof(uint256[2],uint256[2][2],uint256[2],uint256[7])(bool)" \
-  "[12472914312737636811347307842788773051755724196037724470762126623208329082845,17125918841847538001226743052918113981393070774074937215351343065710279190174]" \
-  "[[13316199290824921864388843935043170811490389689599903694377958113728821724487,3207690585627279667222546444779204611953991254198462100130332970012255959027],[16597733531601378053991249421353005495822086083367379157580643714684518625125,13888535118599279860106084626949534552065350070663188342813458864670672409178]]" \
-  "[6591375277283859117440711145694368604568770498840688111316720518401833356876,8913562152110469152972974287011025948548824595144754495568345277540103002976]" \
-  "[0,9422168850547513324964282358817941077575013683908892985936811464479841607707,7982188534737865902703884740975986036599116980257042523917003927210349271917,0,1,1000,1000000000000000000000000]" \
-  --rpc-url http://127.0.0.1:8545
-```
-
-Expected result:
-
-```text
-true
-```
-
-This sample proof is valid and proves a **non-whale** vote because `publicSignals[0] = 0`.
-
-### What you pass to `castVote`
-
-You do **not** pass `publicSignals` into `castVote`. You pass:
-
-```text
-proposalId
-nullifierHash
-voteValue
-isWhale
-a
-b
-c
-```
-
-The contract then reconstructs:
-
-```solidity
-[
-    uint256(isWhale),
-    uint256(p.merkleRoot),
-    uint256(nullifierHash),
-    proposalId,
-    uint256(voteValue),
-    p.whaleThresholdBps,
-    p.totalSupply
-]
-```
-
-and forwards that to `verifyProof`.
-
-So the exact rule is:
-
-- `nullifierHash` must equal `publicSignals[2]`
-- `voteValue` must equal `publicSignals[4]`
-- `isWhale` must equal `publicSignals[0]`
-- the proposal's stored `merkleRoot`, `whaleThresholdBps`, and `totalSupply` must match `publicSignals[1]`, `[5]`, and `[6]`
-
-If any of those disagree with the proof, [AnonymousVoting.sol](/Users/raj/dev/kwala/anon-voting/contracts/src/AnonymousVoting.sol) reverts with `ProofVerificationFailed()`.
-
-### Exact `castVote` example
-
-Using the same sample proof and assuming proposal `0` was created with:
-
-- `merkleRoot = 0x14d4c232885c94c7cc0e37aabec6ebce3eac89d3b40662dc96f4c6c55c0e601b`
-- `whaleThresholdBps = 1000`
-- `totalSupply = 1000000000000000000000000`
-
-and the proof's nullifier:
-
-- `nullifierHash = 0x11a5c2341707d20435c36047ab5a56f9457d5b5265615a3bdd89aa61a5e79b6d`
-
-then the vote call is:
-
-```bash
-cast send <ANONYMOUS_VOTING_ADDR> \
-  "castVote(uint256,bytes32,uint8,uint8,uint256[2],uint256[2][2],uint256[2])" \
-  0 \
-  0x11a5c2341707d20435c36047ab5a56f9457d5b5265615a3bdd89aa61a5e79b6d \
-  1 \
-  0 \
-  "[12472914312737636811347307842788773051755724196037724470762126623208329082845,17125918841847538001226743052918113981393070774074937215351343065710279190174]" \
-  "[[13316199290824921864388843935043170811490389689599903694377958113728821724487,3207690585627279667222546444779204611953991254198462100130332970012255959027],[16597733531601378053991249421353005495822086083367379157580643714684518625125,13888535118599279860106084626949534552065350070663188342813458864670672409178]]" \
-  "[6591375277283859117440711145694368604568770498840688111316720518401833356876,8913562152110469152972974287011025948548824595144754495568345277540103002976]" \
-  --rpc-url http://127.0.0.1:8545 \
-  --private-key $PRIVATE_KEY
-```
-
-Replace `<ANONYMOUS_VOTING_ADDR>` and the `nullifierHash` with your actual deployed contract and actual proof output. The values above only succeed if the stored proposal fields exactly match the proof's public signals.
-
----
-
-## Security Notes
-
-- **MockVerifier is for testing only.** `MockVerifier.sol` always returns `true`. The default deploy script now deploys the generated `Groth16Verifier`, while tests still use `MockVerifier`.
-- **Nullifier linkability.** `Poseidon(secret, address, proposalId)` binds your secret to a specific proposal. Reusing the same secret across proposals lets an observer link those nullifiers to the same voter. Generate a fresh secret per vote.
-- **Merkle snapshot integrity.** The `merkleRoot` is computed from Transfer events up to `snapshotBlock`. Anyone can independently verify it by replaying the same events. The contract stores the root at proposal creation time and it is immutable thereafter.
-- **Trusted setup.** Groth16 requires a trusted setup. For production: use the Hermez ceremony ptau (Option B above) for Phase 1, and run Phase 2 with multiple independent contributors. The security guarantee is "at least one contributor destroyed their randomness."
-- **Whale threshold bounds.** Enforced on-chain to be in [1, 10000] bps. The circuit enforces the same arithmetic via a public signal — the two must agree or `verifyProof` reverts.
-- **Field arithmetic.** Balance values must fit within BN254's scalar field (< 2^254). Since balanceBits=96 and totalSupply is a standard ERC-20, products stay well within this bound.
+* **Monitor Your Workflows** — track execution logs and retry failures in the [Kwala Dashboard](https://kwala.network/dashboard).
+* **Extend to Discord or Slack** — replace the Telegram `APIEndpoint` with a Discord webhook or Slack incoming webhook URL; the rest of the YAML stays the same.
+* **Add a finalization alert** — create a third workflow that listens for a `ProposalFinalized` event and posts the final FOR/AGAINST tally to your community channel.
+* **Best Practices** — read the [Kwala best practices guide](https://kwala.network/docs/concepts/best-practices) for tips on retry logic, expiry management, and workflow versioning.
